@@ -1,0 +1,998 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Goods Manager</title>
+<!-- Telegram WebApp SDK -->
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<!-- Supabase -->
+<script>
+// Inline Supabase client — avoids CDN issues inside Telegram browser
+window._supabaseUrl = 'https://xpvbqbnuychlemqalvak.supabase.co';
+window._supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhwdmJxYm51eWNobGVtcWFsdmFrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMxNjI5MjIsImV4cCI6MjA4ODczODkyMn0.x9ZJsHFORKd4_7CWXpD7c4QnpGm1LUtLC4QfPB8OM48';
+</script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@400;500;600;700&display=swap');
+
+  :root {
+    --bg: #080b10;
+    --surface: #0f1420;
+    --surface2: #171e2e;
+    --border: #243050;
+    --accent: #00e5a0;
+    --accent-dim: rgba(0,229,160,0.1);
+    --blue: #4d9fff;
+    --blue-dim: rgba(77,159,255,0.1);
+    --danger: #ff5470;
+    --danger-dim: rgba(255,84,112,0.1);
+    --gold: #ffc84d;
+    --gold-dim: rgba(255,200,77,0.1);
+    --purple: #b48bfa;
+    --purple-dim: rgba(180,139,250,0.1);
+    --text: #dde3f0;
+    --muted: #5a6480;
+    --muted2: #7b88a8;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; }
+  body { font-family: 'DM Sans', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; overflow-x: hidden; -webkit-font-smoothing: antialiased; }
+
+  /* ── LOADING SCREEN ── */
+  #loadingScreen {
+    position: fixed; inset: 0; background: var(--bg);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    z-index: 9999; gap: 16px;
+  }
+  .spinner { width: 38px; height: 38px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .loading-text { font-family: 'Space Mono', monospace; font-size: 12px; color: var(--muted); }
+
+  /* ── ERROR SCREEN ── */
+  #errorScreen {
+    position: fixed; inset: 0; background: var(--bg);
+    display: none; flex-direction: column; align-items: center; justify-content: center;
+    z-index: 9998; padding: 32px; text-align: center; gap: 12px;
+  }
+  .error-icon { font-size: 44px; }
+  .error-title { font-family: 'Space Mono', monospace; font-size: 14px; color: var(--danger); }
+  .error-msg { font-size: 13px; color: var(--muted2); line-height: 1.6; }
+  .error-retry { margin-top: 8px; padding: 12px 28px; background: var(--accent); color: #05100a; border: none; border-radius: 12px; font-family: 'DM Sans', sans-serif; font-size: 14px; font-weight: 700; cursor: pointer; }
+
+  /* ── HEADER ── */
+  .header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 12px 16px 0; position: sticky; top: 0; z-index: 100; }
+  .header-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+  .logo { font-family: 'Space Mono', monospace; font-size: 14px; font-weight: 700; color: var(--accent); letter-spacing: 1px; }
+  .logo em { color: var(--muted2); font-style: normal; }
+  .header-right { display: flex; align-items: center; gap: 8px; }
+  .sync-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex-shrink: 0; transition: background 0.3s; }
+  .sync-dot.syncing { background: var(--gold); animation: pulse 1s infinite; }
+  .sync-dot.error { background: var(--danger); }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+  .item-pill { font-family: 'Space Mono', monospace; font-size: 10px; background: var(--surface2); border: 1px solid var(--border); color: var(--muted2); padding: 3px 10px; border-radius: 20px; }
+  .item-pill b { color: var(--text); }
+
+  .tabs { display: flex; margin: 0 -16px; padding: 0 16px; overflow-x: auto; scrollbar-width: none; }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tab { flex-shrink: 0; padding: 10px 14px 11px; border: none; background: transparent; color: var(--muted); font-family: 'DM Sans', sans-serif; font-size: 13px; font-weight: 500; cursor: pointer; border-bottom: 2px solid transparent; transition: all 0.2s; white-space: nowrap; }
+  .tab.active { color: var(--text); border-bottom-color: var(--accent); }
+
+  /* ── MAIN ── */
+  .main { padding: 14px 14px 90px; }
+  .panel { display: none; animation: fadeIn 0.2s ease; }
+  .panel.active { display: block; }
+  @keyframes fadeIn { from { opacity:0; transform:translateY(4px); } to { opacity:1; transform:translateY(0); } }
+  @keyframes slideIn { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:translateY(0); } }
+
+  /* SEARCH */
+  .search-wrap { position: relative; margin-bottom: 12px; }
+  .search-wrap input { width: 100%; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px 10px 38px; color: var(--text); font-family: 'Space Mono', monospace; font-size: 12px; outline: none; transition: border-color 0.2s; -webkit-appearance: none; }
+  .search-wrap input::placeholder { color: var(--muted); font-size: 11px; font-family: 'DM Sans', sans-serif; }
+  .search-wrap input:focus { border-color: var(--accent); }
+  .search-icon { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); font-size: 13px; pointer-events: none; }
+
+  /* STAT STRIP */
+  .stat-strip { display: grid; grid-template-columns: repeat(3,1fr); gap: 8px; margin-bottom: 14px; }
+  .stat-chip { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 10px 10px 8px; }
+  .stat-chip-label { font-size: 10px; color: var(--muted); margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .stat-chip-val { font-family: 'Space Mono', monospace; font-size: 15px; font-weight: 700; }
+  .c-accent{color:var(--accent)} .c-blue{color:var(--blue)} .c-purple{color:var(--purple)} .c-gold{color:var(--gold)} .c-danger{color:var(--danger)}
+
+  /* GOODS */
+  .goods-list { display: flex; flex-direction: column; gap: 8px; }
+  .good-card { background: var(--surface); border: 1px solid var(--border); border-radius: 13px; overflow: hidden; animation: slideIn 0.25s ease; }
+  .good-card-main { display: flex; align-items: center; gap: 11px; padding: 11px 12px; }
+  .good-icon { width: 38px; height: 38px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 17px; flex-shrink: 0; }
+  .good-icon.liquid { background: var(--blue-dim); } .good-icon.solid { background: var(--purple-dim); }
+  .good-info { flex: 1; min-width: 0; }
+  .good-code { font-family: 'Space Mono', monospace; font-size: 13px; font-weight: 700; color: var(--text); text-transform: uppercase; letter-spacing: 0.5px; }
+  .good-name { font-size: 11px; color: var(--muted2); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .good-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+  .qty-block { text-align: right; }
+  .qty-val { font-family: 'Space Mono', monospace; font-size: 16px; font-weight: 700; line-height: 1; }
+  .qty-val.liquid{color:var(--blue)} .qty-val.solid{color:var(--purple)}
+  .qty-unit { font-size: 10px; color: var(--muted); margin-top: 2px; }
+  .good-actions { display: flex; gap: 5px; }
+  .icon-btn { width: 30px; height: 30px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface2); color: var(--muted2); font-size: 13px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: all 0.15s; font-weight: 700; }
+  .icon-btn:active { transform: scale(0.9); }
+  .good-price-bar { display: flex; border-top: 1px solid var(--border); background: var(--surface2); }
+  .price-cell { flex: 1; padding: 6px 12px; font-size: 11px; border-right: 1px solid var(--border); }
+  .price-cell:last-child { border-right: none; }
+  .price-label { color: var(--muted); margin-bottom: 1px; }
+  .price-value { font-family: 'Space Mono', monospace; font-weight: 700; }
+  .price-value.cost{color:var(--danger)} .price-value.sell{color:var(--accent)}
+  .margin-pos{color:var(--accent)} .margin-neg{color:var(--danger)}
+  .low-badge { font-size: 9px; background: var(--danger-dim); color: var(--danger); border: 1px solid rgba(255,84,112,0.25); padding: 1px 6px; border-radius: 20px; margin-left: 5px; vertical-align: middle; }
+
+  /* FORMS */
+  .form-card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 16px; margin-bottom: 10px; }
+  .form-section-title { font-family: 'Space Mono', monospace; font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 1.2px; margin-bottom: 14px; }
+  .form-row { display: flex; gap: 8px; }
+  .form-row .form-group { flex: 1; }
+  .form-group { margin-bottom: 11px; }
+  .form-label { font-size: 11px; color: var(--muted2); margin-bottom: 5px; display: block; }
+  .form-input { width: 100%; background: var(--surface2); border: 1px solid var(--border); border-radius: 9px; padding: 10px 12px; color: var(--text); font-family: 'Space Mono', monospace; font-size: 13px; outline: none; transition: border-color 0.2s; text-transform: uppercase; -webkit-appearance: none; }
+  .form-input::placeholder { color: var(--muted); font-size: 12px; text-transform: none; }
+  .form-input:focus { border-color: var(--accent); }
+  .form-input.no-upper { text-transform: none; }
+  .form-input.price-input:focus { border-color: var(--gold); }
+  .type-toggle { display: flex; gap: 8px; }
+  .type-btn { flex: 1; padding: 9px; border-radius: 9px; border: 1px solid var(--border); background: var(--surface2); color: var(--muted); font-family: 'DM Sans', sans-serif; font-size: 13px; font-weight: 500; cursor: pointer; transition: all 0.2s; text-align: center; }
+  .type-btn.active-liquid { background: var(--blue-dim); border-color: var(--blue); color: var(--blue); }
+  .type-btn.active-solid { background: var(--purple-dim); border-color: var(--purple); color: var(--purple); }
+  .qty-row { display: flex; align-items: center; gap: 8px; }
+  .qty-row .form-input { flex: 1; }
+  .unit-tag { font-family: 'Space Mono', monospace; font-size: 12px; padding: 10px 12px; background: var(--surface2); border: 1px solid var(--border); border-radius: 9px; color: var(--muted2); white-space: nowrap; }
+  .divider { height: 1px; background: var(--border); margin: 14px 0; }
+
+  /* SELL */
+  .sell-found-card { background: var(--surface); border: 1px solid var(--accent); border-radius: 12px; padding: 14px; margin-bottom: 10px; display: none; animation: slideIn 0.2s ease; }
+  .sell-found-header { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 12px; }
+  .sell-code { font-family: 'Space Mono', monospace; font-size: 15px; font-weight: 700; text-transform: uppercase; }
+  .sell-name { font-size: 12px; color: var(--muted2); margin-top: 2px; }
+  .sell-stock-block { margin-left: auto; text-align: right; }
+  .sell-stock-label { font-size: 10px; color: var(--muted); }
+  .sell-stock-val { font-family: 'Space Mono', monospace; font-size: 14px; font-weight: 700; }
+  .sell-price-preview { display: flex; gap: 8px; background: var(--surface2); border-radius: 9px; padding: 10px 12px; margin-bottom: 12px; }
+  .spp-item { flex: 1; text-align: center; }
+  .spp-label { color: var(--muted); font-size: 10px; margin-bottom: 3px; }
+  .spp-val { font-family: 'Space Mono', monospace; font-weight: 700; font-size: 13px; }
+
+  /* BUTTONS */
+  .btn { width: 100%; padding: 13px; border-radius: 12px; border: none; font-family: 'DM Sans', sans-serif; font-size: 15px; font-weight: 600; cursor: pointer; transition: all 0.15s; -webkit-appearance: none; }
+  .btn:active { transform: scale(0.98); opacity: 0.9; }
+  .btn:disabled { opacity: 0.5; pointer-events: none; }
+  .btn-add { background: var(--accent); color: #05100a; }
+  .btn-sell { background: var(--danger); color: #fff; }
+
+  /* ANALYTICS */
+  .period-tabs { display: flex; gap: 6px; margin-bottom: 16px; }
+  .period-btn { flex: 1; padding: 8px 4px; border-radius: 9px; border: 1px solid var(--border); background: var(--surface2); color: var(--muted2); font-family: 'Space Mono', monospace; font-size: 11px; cursor: pointer; transition: all 0.2s; }
+  .period-btn.active { background: var(--gold-dim); border-color: var(--gold); color: var(--gold); }
+  .analytics-hero { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 18px 16px; margin-bottom: 10px; text-align: center; }
+  .hero-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px; }
+  .hero-revenue { font-family: 'Space Mono', monospace; font-size: 32px; font-weight: 700; color: var(--accent); line-height: 1; margin-bottom: 4px; }
+  .hero-profit { font-family: 'Space Mono', monospace; font-size: 16px; font-weight: 700; }
+  .hero-profit-label { font-size: 11px; color: var(--muted); margin-right: 4px; }
+  .hero-txn { font-size: 12px; color: var(--muted2); margin-top: 6px; }
+  .analytics-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
+  .analytics-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; }
+  .ac-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+  .ac-val { font-family: 'Space Mono', monospace; font-size: 18px; font-weight: 700; }
+  .ac-sub { font-size: 11px; color: var(--muted2); margin-top: 3px; }
+  .section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  .section-title { font-family: 'Space Mono', monospace; font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
+  .section-action { font-size: 11px; color: var(--danger); cursor: pointer; font-weight: 600; padding: 3px 8px; border: 1px solid rgba(255,84,112,0.3); border-radius: 6px; background: var(--danger-dim); }
+  .top-good-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 6px; }
+  .tg-rank { font-family: 'Space Mono', monospace; font-size: 11px; color: var(--muted); width: 18px; flex-shrink: 0; }
+  .tg-code { font-family: 'Space Mono', monospace; font-size: 12px; font-weight: 700; text-transform: uppercase; }
+  .tx-row { display: flex; align-items: center; gap: 10px; padding: 9px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 5px; transition: border-color 0.2s; }
+  .tx-row.edit-mode { border-color: rgba(255,84,112,0.35); }
+  .tx-info { flex: 1; min-width: 0; }
+  .tx-code { font-family: 'Space Mono', monospace; font-size: 12px; font-weight: 700; text-transform: uppercase; }
+  .tx-time { font-size: 10px; color: var(--muted); margin-top: 1px; }
+  .tx-right { text-align: right; flex-shrink: 0; }
+  .tx-revenue { font-family: 'Space Mono', monospace; font-size: 13px; font-weight: 700; color: var(--accent); }
+  .tx-profit { font-family: 'Space Mono', monospace; font-size: 11px; }
+  .tx-qty { font-size: 11px; color: var(--muted2); }
+  .tx-del-btn { width: 28px; height: 28px; border-radius: 7px; border: 1px solid rgba(255,84,112,0.4); background: var(--danger-dim); color: var(--danger); font-size: 14px; cursor: pointer; display: none; align-items: center; justify-content: center; flex-shrink: 0; }
+  .tx-del-btn:active { transform: scale(0.9); }
+  .edit-mode-on .tx-del-btn { display: flex; }
+  .manage-bar { background: var(--surface2); border: 1px solid var(--gold); border-radius: 12px; padding: 12px 14px; margin-bottom: 12px; display: none; }
+  .manage-bar.visible { display: block; animation: slideIn 0.2s ease; }
+  .manage-bar-title { font-family: 'Space Mono', monospace; font-size: 11px; color: var(--gold); margin-bottom: 10px; }
+  .manage-bar-actions { display: flex; gap: 8px; }
+  .manage-btn { flex: 1; padding: 9px; border-radius: 9px; border: none; font-family: 'DM Sans', sans-serif; font-size: 12px; font-weight: 600; cursor: pointer; }
+  .manage-btn:active { transform: scale(0.97); }
+  .manage-btn-cancel { background: var(--surface); border: 1px solid var(--border); color: var(--muted2); }
+  .manage-btn-clear { background: var(--danger-dim); border: 1px solid rgba(255,84,112,0.4); color: var(--danger); }
+
+  /* TOAST */
+  .toast { position: fixed; bottom: 82px; left: 50%; transform: translateX(-50%) translateY(20px); background: var(--surface2); border: 1px solid var(--border); border-radius: 10px; padding: 10px 20px; font-size: 13px; color: var(--text); z-index: 9999; opacity: 0; transition: all 0.3s; white-space: nowrap; pointer-events: none; max-width: 90vw; text-align: center; }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  .toast.success { border-color: var(--accent); color: var(--accent); }
+  .toast.error { border-color: var(--danger); color: var(--danger); }
+  .toast.warn { border-color: var(--gold); color: var(--gold); }
+
+  /* MODALS */
+  .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.78); z-index: 300; display: none; align-items: flex-end; }
+  .modal-overlay.open { display: flex; }
+  .modal { background: var(--surface); border-radius: 20px 20px 0 0; padding: 18px 16px 36px; width: 100%; border-top: 1px solid var(--border); animation: slideUp 0.28s ease; }
+  @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+  .modal-handle { width: 36px; height: 4px; background: var(--border); border-radius: 2px; margin: 0 auto 14px; }
+  .modal-title { font-family: 'Space Mono', monospace; font-size: 13px; color: var(--text); margin-bottom: 4px; text-transform: uppercase; }
+  .modal-sub { font-size: 12px; color: var(--muted2); margin-bottom: 14px; line-height: 1.55; }
+  .modal-actions { display: flex; gap: 8px; margin-top: 14px; }
+  .btn-outline { flex: 1; background: transparent; border: 1px solid var(--border); color: var(--muted2); padding: 13px; border-radius: 12px; font-size: 14px; font-family: 'DM Sans', sans-serif; cursor: pointer; }
+
+  .empty-state { text-align: center; padding: 40px 20px; color: var(--muted); }
+  .empty-state .emoji { font-size: 38px; margin-bottom: 10px; }
+  .empty-state p { font-size: 13px; }
+  .no-data { text-align: center; padding: 28px 16px; color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+
+<!-- LOADING -->
+<div id="loadingScreen">
+  <div class="spinner"></div>
+  <div class="loading-text" id="loadingText">Loading…</div>
+</div>
+
+<!-- ERROR -->
+<div id="errorScreen" style="display:none;flex-direction:column;align-items:center;justify-content:center;padding:32px;text-align:center;gap:12px;position:fixed;inset:0;background:var(--bg);z-index:9998;">
+  <div style="font-size:44px;">⚠️</div>
+  <div style="font-family:'Space Mono',monospace;font-size:14px;color:var(--danger);">Connection Failed</div>
+  <div style="font-size:13px;color:var(--muted2);line-height:1.6;" id="errorMsg">Could not connect to the database.</div>
+  <button style="margin-top:8px;padding:12px 28px;background:var(--accent);color:#05100a;border:none;border-radius:12px;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:700;cursor:pointer;" onclick="location.reload()">🔄 Retry</button>
+</div>
+
+<!-- APP -->
+<div id="appShell" style="display:none;">
+  <div class="header">
+    <div class="header-row">
+      <div class="logo">GOODS<em>/MGR</em></div>
+      <div class="header-right">
+        <span class="sync-dot" id="syncDot" title="Sync status"></span>
+        <div class="item-pill"><b id="totalCount">0</b> items</div>
+      </div>
+    </div>
+    <div class="tabs">
+      <button class="tab active" onclick="switchTab('inventory')">📦 Inventory</button>
+      <button class="tab" onclick="switchTab('add')">➕ Add</button>
+      <button class="tab" onclick="switchTab('sell')">💸 Sell</button>
+      <button class="tab" onclick="switchTab('analytics')">📊 Analytics</button>
+    </div>
+  </div>
+
+  <div class="main">
+    <!-- INVENTORY -->
+    <div class="panel active" id="panel-inventory">
+      <div class="stat-strip">
+        <div class="stat-chip"><div class="stat-chip-label">Goods</div><div class="stat-chip-val c-accent" id="s-total">0</div></div>
+        <div class="stat-chip"><div class="stat-chip-label">Liquid 💧</div><div class="stat-chip-val c-blue" id="s-liquid">0 L</div></div>
+        <div class="stat-chip"><div class="stat-chip-label">Solid 📦</div><div class="stat-chip-val c-purple" id="s-solid">0</div></div>
+      </div>
+      <div class="search-wrap">
+        <span class="search-icon">🔍</span>
+        <input type="text" id="searchInput" placeholder="Search by code or name…" oninput="renderInventory()">
+      </div>
+      <div class="goods-list" id="goodsList"></div>
+    </div>
+
+    <!-- ADD -->
+    <div class="panel" id="panel-add">
+      <div class="form-card">
+        <div class="form-section-title">Register Good</div>
+        <div class="form-group">
+          <label class="form-label">Code *</label>
+          <input class="form-input" id="addCode" type="text" placeholder="e.g. cs103, bb12" maxlength="20" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Name / Description</label>
+          <input class="form-input no-upper" id="addName" type="text" placeholder="Optional" autocomplete="off">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Type</label>
+          <div class="type-toggle">
+            <button class="type-btn" id="typesolidBtn" onclick="setType('solid')">📦 Solid</button>
+            <button class="type-btn" id="typeliquidBtn" onclick="setType('liquid')">💧 Liquid</button>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Initial Quantity</label>
+          <div class="qty-row">
+            <input class="form-input" id="addQty" type="number" min="0" step="0.1" placeholder="0" inputmode="decimal">
+            <div class="unit-tag" id="addUnit">units</div>
+          </div>
+        </div>
+        <div class="divider"></div>
+        <div class="form-section-title" style="margin-bottom:12px">💰 Pricing</div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Cost price (per unit)</label>
+            <input class="form-input price-input" id="addCostPrice" type="number" min="0" step="0.01" placeholder="0.00" inputmode="decimal">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Sell price (per unit)</label>
+            <input class="form-input price-input" id="addSellPrice" type="number" min="0" step="0.01" placeholder="0.00" inputmode="decimal">
+          </div>
+        </div>
+        <div id="marginPreview" style="font-family:'Space Mono',monospace;font-size:11px;color:var(--muted);min-height:16px;"></div>
+      </div>
+      <button class="btn btn-add" id="addBtn" onclick="addGood()">➕ Save Good</button>
+    </div>
+
+    <!-- SELL -->
+    <div class="panel" id="panel-sell">
+      <div class="form-card">
+        <div class="form-section-title">Sell / Extract Stock</div>
+        <div class="form-group" style="margin-bottom:0">
+          <label class="form-label">Good Code</label>
+          <input class="form-input" id="sellCode" type="text" placeholder="e.g. cs103" oninput="onSellCodeInput()" maxlength="20" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false">
+        </div>
+      </div>
+      <div class="sell-found-card" id="sellResult">
+        <div class="sell-found-header">
+          <div>
+            <div class="sell-code" id="sellResultCode"></div>
+            <div class="sell-name" id="sellResultName"></div>
+          </div>
+          <div class="sell-stock-block">
+            <div class="sell-stock-label">In stock</div>
+            <div class="sell-stock-val" id="sellResultStock"></div>
+          </div>
+        </div>
+        <div class="sell-price-preview">
+          <div class="spp-item"><div class="spp-label">Cost/unit</div><div class="spp-val c-danger" id="spp-cost">—</div></div>
+          <div class="spp-item"><div class="spp-label">Sell/unit</div><div class="spp-val c-accent" id="spp-sell">—</div></div>
+          <div class="spp-item"><div class="spp-label">Revenue</div><div class="spp-val c-gold" id="spp-rev">—</div></div>
+          <div class="spp-item"><div class="spp-label">Profit</div><div class="spp-val" id="spp-profit">—</div></div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Quantity to sell</label>
+          <div class="qty-row">
+            <input class="form-input" id="sellQty" type="number" min="0.01" step="0.1" placeholder="0" oninput="updateSellPreview()" inputmode="decimal">
+            <div class="unit-tag" id="sellUnit">units</div>
+          </div>
+        </div>
+        <button class="btn btn-sell" id="sellBtn" onclick="sellGood()">💸 Confirm Sale</button>
+      </div>
+    </div>
+
+    <!-- ANALYTICS -->
+    <div class="panel" id="panel-analytics">
+      <div class="period-tabs">
+        <button class="period-btn active" onclick="setPeriod('day')">Day</button>
+        <button class="period-btn" onclick="setPeriod('week')">Week</button>
+        <button class="period-btn" onclick="setPeriod('month')">Month</button>
+        <button class="period-btn" onclick="setPeriod('year')">Year</button>
+        <button class="period-btn" onclick="setPeriod('all')">All</button>
+      </div>
+      <div class="analytics-hero">
+        <div class="hero-label" id="heroLabel">Today's Revenue</div>
+        <div class="hero-revenue" id="heroRevenue">$0.00</div>
+        <div style="margin-top:5px">
+          <span class="hero-profit-label">Profit:</span>
+          <span class="hero-profit" id="heroProfit">$0.00</span>
+        </div>
+        <div class="hero-txn" id="heroTxn">0 transactions</div>
+      </div>
+      <div class="analytics-grid">
+        <div class="analytics-card"><div class="ac-label">Total Cost</div><div class="ac-val c-danger" id="ac-cost">$0.00</div><div class="ac-sub">Base price paid</div></div>
+        <div class="analytics-card"><div class="ac-label">Margin %</div><div class="ac-val c-gold" id="ac-margin">0%</div><div class="ac-sub">Profit / Revenue</div></div>
+        <div class="analytics-card"><div class="ac-label">Units Sold</div><div class="ac-val c-purple" id="ac-units">0</div><div class="ac-sub">Items / litres</div></div>
+        <div class="analytics-card"><div class="ac-label">Avg Sale</div><div class="ac-val c-blue" id="ac-avg">$0.00</div><div class="ac-sub">Revenue / txn</div></div>
+      </div>
+      <div class="section-header"><div class="section-title">🏆 Top Goods</div></div>
+      <div id="topGoods"></div>
+      <div class="section-header" style="margin-top:14px">
+        <div class="section-title">🕓 Transactions</div>
+        <span id="editModeToggle" class="section-action" onclick="toggleEditMode()">✏️ Manage</span>
+      </div>
+      <div class="manage-bar" id="manageBar">
+        <div class="manage-bar-title">⚠️ Tap 🗑 on any transaction to delete it</div>
+        <div class="manage-bar-actions">
+          <button class="manage-btn manage-btn-cancel" onclick="toggleEditMode()">✕ Done</button>
+          <button class="manage-btn manage-btn-clear" onclick="openClearAllModal()">🗑 Clear Period</button>
+        </div>
+      </div>
+      <div id="txHistory"></div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<!-- DELETE GOOD MODAL -->
+<div class="modal-overlay" id="deleteModal" onclick="closeModal('deleteModal')">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-handle"></div>
+    <div class="modal-title">Delete Product</div>
+    <div class="modal-sub" id="deleteSub"></div>
+    <div class="modal-actions">
+      <button class="btn-outline" onclick="closeModal('deleteModal')">Cancel</button>
+      <button class="btn btn-sell" onclick="confirmDelete()">Delete</button>
+    </div>
+  </div>
+</div>
+
+<!-- DELETE TX MODAL -->
+<div class="modal-overlay" id="deleteTxModal" onclick="closeModal('deleteTxModal')">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-handle"></div>
+    <div class="modal-title">Delete Transaction</div>
+    <div class="modal-sub" id="deleteTxSub"></div>
+    <div class="modal-actions">
+      <button class="btn-outline" onclick="closeModal('deleteTxModal')">Cancel</button>
+      <button class="btn btn-sell" onclick="confirmDeleteTx()">Delete</button>
+    </div>
+  </div>
+</div>
+
+<!-- CLEAR ALL MODAL -->
+<div class="modal-overlay" id="clearAllModal" onclick="closeModal('clearAllModal')">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-handle"></div>
+    <div class="modal-title">⚠️ Clear Transactions</div>
+    <div class="modal-sub" id="clearAllSub"></div>
+    <div class="modal-actions">
+      <button class="btn-outline" onclick="closeModal('clearAllModal')">Cancel</button>
+      <button class="btn btn-sell" onclick="confirmClearAll()">Clear All</button>
+    </div>
+  </div>
+</div>
+
+<!-- QUICK ADD MODAL -->
+<div class="modal-overlay" id="quickAddModal" onclick="closeModal('quickAddModal')">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-handle"></div>
+    <div class="modal-title">Add Stock</div>
+    <div class="modal-sub" id="quickAddSub">Add quantity to stock</div>
+    <div class="qty-row">
+      <input class="form-input" id="quickAddQty" type="number" min="0.01" step="0.1" placeholder="Quantity" inputmode="decimal">
+      <div class="unit-tag" id="quickAddUnit">units</div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-outline" onclick="closeModal('quickAddModal')">Cancel</button>
+      <button class="btn btn-add" onclick="confirmQuickAdd()">Add Stock</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ══════════════════════════════════════════════
+//  SUPABASE INIT
+// ══════════════════════════════════════════════
+const SUPA_URL = 'https://xpvbqbnuychlemqalvak.supabase.co';
+const SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhwdmJxYm51eWNobGVtcWFsdmFrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMxNjI5MjIsImV4cCI6MjA4ODczODkyMn0.x9ZJsHFORKd4_7CWXpD7c4QnpGm1LUtLC4QfPB8OM48';
+const db = supabase.createClient(SUPA_URL, SUPA_KEY);
+
+// ══════════════════════════════════════════════
+//  STATE
+// ══════════════════════════════════════════════
+let goods = {};
+let sales = [];
+let selectedType = 'solid';
+let activePeriod = 'day';
+let deleteTarget = null;
+let quickAddTarget = null;
+let deleteTxTarget = null;
+let editModeActive = false;
+
+// ══════════════════════════════════════════════
+//  SYNC DOT
+// ══════════════════════════════════════════════
+function setSync(s) {
+  const d = document.getElementById('syncDot');
+  d.className = 'sync-dot' + (s==='syncing'?' syncing':s==='error'?' error':'');
+}
+
+// ══════════════════════════════════════════════
+//  DB HELPERS
+// ══════════════════════════════════════════════
+async function dbLoad() {
+  const [g, s] = await Promise.all([
+    db.from('goods').select('*'),
+    db.from('sales').select('*').order('ts', { ascending: false })
+  ]);
+  if (g.error) throw g.error;
+  if (s.error) throw s.error;
+
+  goods = {};
+  (g.data || []).forEach(r => {
+    goods[r.id] = {
+      type: r.type, qty: Number(r.qty), name: r.name || '',
+      costPrice: r.cost_price != null ? Number(r.cost_price) : null,
+      sellPrice: r.sell_price != null ? Number(r.sell_price) : null
+    };
+  });
+  sales = (s.data || []).map(r => ({
+    id: r.id, code: r.code, qty: Number(r.qty),
+    revenue: Number(r.revenue), profit: Number(r.profit), ts: Number(r.ts)
+  }));
+}
+
+async function dbSaveGood(code) {
+  setSync('syncing');
+  const g = goods[code];
+  const { error } = await db.from('goods').upsert({
+    id: code, type: g.type, qty: g.qty,
+    name: g.name || null, cost_price: g.costPrice, sell_price: g.sellPrice
+  });
+  if (error) { setSync('error'); throw error; }
+  setSync('ok');
+}
+
+async function dbDeleteGood(code) {
+  setSync('syncing');
+  const { error } = await db.from('goods').delete().eq('id', code);
+  if (error) { setSync('error'); throw error; }
+  setSync('ok');
+}
+
+async function dbSaveSale(sale) {
+  setSync('syncing');
+  const { error } = await db.from('sales').insert({
+    code: sale.code, qty: sale.qty,
+    revenue: sale.revenue, profit: sale.profit, ts: sale.ts
+  });
+  if (error) { setSync('error'); throw error; }
+  setSync('ok');
+}
+
+async function dbDeleteSale(id) {
+  setSync('syncing');
+  const { error } = await db.from('sales').delete().eq('id', id);
+  if (error) { setSync('error'); throw error; }
+  setSync('ok');
+}
+
+async function dbDeleteSalesByPeriod(start) {
+  setSync('syncing');
+  const { error } = await db.from('sales').delete().gte('ts', start);
+  if (error) { setSync('error'); throw error; }
+  setSync('ok');
+}
+
+// ══════════════════════════════════════════════
+//  BOOT
+// ══════════════════════════════════════════════
+try { window.Telegram?.WebApp?.ready(); window.Telegram?.WebApp?.expand(); } catch(e) {}
+
+(async () => {
+  document.getElementById('loadingText').textContent = 'Connecting to database…';
+  try {
+    await dbLoad();
+    document.getElementById('loadingScreen').style.display = 'none';
+    document.getElementById('appShell').style.display = 'block';
+    setType('solid');
+    renderInventory();
+    ['addCostPrice','addSellPrice'].forEach(id =>
+      document.getElementById(id).addEventListener('input', updateMarginPreview)
+    );
+    setSync('ok');
+  } catch(e) {
+    console.error('Boot error:', e);
+    document.getElementById('loadingScreen').style.display = 'none';
+    document.getElementById('errorMsg').textContent =
+      'Could not reach the database. Make sure you have internet and try again.\n\nDetail: ' + (e.message || e);
+    document.getElementById('errorScreen').style.display = 'flex';
+  }
+})();
+
+// ══════════════════════════════════════════════
+//  TABS
+// ══════════════════════════════════════════════
+function switchTab(tab) {
+  const names = ['inventory','add','sell','analytics'];
+  document.querySelectorAll('.tab').forEach((t,i) => t.classList.toggle('active', names[i]===tab));
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.getElementById('panel-'+tab).classList.add('active');
+  if (tab==='inventory') renderInventory();
+  if (tab==='analytics') { exitEditMode(); renderAnalytics(); }
+}
+
+function setType(type) {
+  selectedType = type;
+  document.getElementById('typesolidBtn').className = 'type-btn'+(type==='solid'?' active-solid':'');
+  document.getElementById('typeliquidBtn').className = 'type-btn'+(type==='liquid'?' active-liquid':'');
+  document.getElementById('addUnit').textContent = type==='liquid'?'L':'units';
+}
+
+function updateMarginPreview() {
+  const cost = parseFloat(document.getElementById('addCostPrice').value)||0;
+  const sell = parseFloat(document.getElementById('addSellPrice').value)||0;
+  const el = document.getElementById('marginPreview');
+  if (!cost&&!sell) { el.textContent=''; return; }
+  if (!sell) { el.innerHTML='<span style="color:var(--muted)">Add sell price to see margin</span>'; return; }
+  const m = sell-cost, pct = ((m/sell)*100).toFixed(1);
+  el.innerHTML = `Margin: <span style="color:${m>=0?'var(--accent)':'var(--danger)'}">${m>=0?'+':''}${fmt(m)} per unit (${pct}%)</span>`;
+}
+
+// ══════════════════════════════════════════════
+//  INVENTORY
+// ══════════════════════════════════════════════
+function renderInventory() {
+  const q = document.getElementById('searchInput').value.toLowerCase().trim();
+  let liq=0, sol=0;
+  Object.values(goods).forEach(g => { if(g.type==='liquid') liq+=g.qty; else sol+=g.qty; });
+  document.getElementById('s-total').textContent = Object.keys(goods).length;
+  document.getElementById('s-liquid').textContent = fmtQty(liq,'liquid')+' L';
+  document.getElementById('s-solid').textContent = sol%1===0?sol:sol.toFixed(2);
+  document.getElementById('totalCount').textContent = Object.keys(goods).length;
+
+  const keys = Object.keys(goods).filter(k => !q||k.includes(q)||(goods[k].name||'').toLowerCase().includes(q)).sort();
+  const list = document.getElementById('goodsList');
+  if (!keys.length) {
+    list.innerHTML = `<div class="empty-state"><div class="emoji">${q?'🔍':'📦'}</div><p>${q?'Nothing matched':'No goods yet!'}</p></div>`;
+    return;
+  }
+  list.innerHTML = keys.map(code => {
+    const g = goods[code];
+    const isLow = g.qty <= 2;
+    const m = (g.sellPrice||0)-(g.costPrice||0);
+    const mPct = g.sellPrice ? ((m/g.sellPrice)*100).toFixed(1) : null;
+    return `<div class="good-card">
+      <div class="good-card-main">
+        <div class="good-icon ${g.type}">${g.type==='liquid'?'💧':'📦'}</div>
+        <div class="good-info">
+          <div class="good-code">${esc(code)}${isLow?'<span class="low-badge">LOW</span>':''}</div>
+          <div class="good-name">${esc(g.name||(g.type==='liquid'?'Liquid':'Solid'))}</div>
+        </div>
+        <div class="good-right">
+          <div class="qty-block">
+            <div class="qty-val ${g.type}">${fmtQty(g.qty,g.type)}</div>
+            <div class="qty-unit">${g.type==='liquid'?'litres':'units'}</div>
+          </div>
+          <div class="good-actions">
+            <button class="icon-btn" style="color:var(--accent)" onclick="openQuickAdd('${esc(code)}')">＋</button>
+            <button class="icon-btn" style="color:var(--danger)" onclick="quickSell('${esc(code)}')">－</button>
+            <button class="icon-btn" onclick="openDeleteGood('${esc(code)}')">🗑</button>
+          </div>
+        </div>
+      </div>
+      <div class="good-price-bar">
+        <div class="price-cell"><div class="price-label">Cost</div><div class="price-value cost">${g.costPrice!=null?fmt(g.costPrice):'—'}</div></div>
+        <div class="price-cell"><div class="price-label">Sell</div><div class="price-value sell">${g.sellPrice!=null?fmt(g.sellPrice):'—'}</div></div>
+        <div class="price-cell"><div class="price-label">Margin</div><div class="price-value ${m>=0?'margin-pos':'margin-neg'}">${mPct!==null?(m>=0?'+':'')+fmt(m)+' ('+mPct+'%)':'—'}</div></div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// ══════════════════════════════════════════════
+//  ADD GOOD
+// ══════════════════════════════════════════════
+async function addGood() {
+  const code = document.getElementById('addCode').value.trim().toLowerCase();
+  const name = document.getElementById('addName').value.trim();
+  const qty  = parseFloat(document.getElementById('addQty').value)||0;
+  const cpVal = document.getElementById('addCostPrice').value;
+  const spVal = document.getElementById('addSellPrice').value;
+  const costPrice = cpVal!==''?parseFloat(cpVal):null;
+  const sellPrice = spVal!==''?parseFloat(spVal):null;
+
+  if (!code) { showToast('Enter a code!','error'); return; }
+  if (!/^[a-z0-9]+$/.test(code)) { showToast('Code: letters & numbers only','error'); return; }
+
+  const btn = document.getElementById('addBtn');
+  btn.disabled = true;
+  try {
+    if (goods[code]) {
+      goods[code].qty += qty;
+      if (name) goods[code].name = name;
+      if (costPrice!==null) goods[code].costPrice = costPrice;
+      if (sellPrice!==null) goods[code].sellPrice = sellPrice;
+    } else {
+      goods[code] = { type: selectedType, qty, name, costPrice, sellPrice };
+    }
+    await dbSaveGood(code);
+    ['addCode','addName','addQty','addCostPrice','addSellPrice'].forEach(id => document.getElementById(id).value='');
+    document.getElementById('marginPreview').textContent='';
+    showToast(`✅ ${code.toUpperCase()} saved!`,'success');
+    switchTab('inventory');
+  } catch(e) {
+    showToast('❌ Save failed','error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ══════════════════════════════════════════════
+//  SELL
+// ══════════════════════════════════════════════
+function onSellCodeInput() {
+  const code = document.getElementById('sellCode').value.trim().toLowerCase();
+  const el = document.getElementById('sellResult');
+  if (!code||!goods[code]) { el.style.display='none'; return; }
+  const g = goods[code];
+  el.style.display = 'block';
+  document.getElementById('sellResultCode').textContent = code.toUpperCase();
+  document.getElementById('sellResultName').textContent = g.name||(g.type==='liquid'?'Liquid good':'Solid good');
+  const sv = document.getElementById('sellResultStock');
+  sv.textContent = g.type==='liquid'?fmtQty(g.qty,'liquid')+' L':g.qty+' units';
+  sv.className = 'sell-stock-val '+g.type;
+  document.getElementById('sellUnit').textContent = g.type==='liquid'?'L':'units';
+  document.getElementById('spp-cost').textContent = g.costPrice!=null?fmt(g.costPrice):'—';
+  document.getElementById('spp-sell').textContent = g.sellPrice!=null?fmt(g.sellPrice):'—';
+  document.getElementById('sellQty').value='';
+  updateSellPreview();
+}
+
+function updateSellPreview() {
+  const code = document.getElementById('sellCode').value.trim().toLowerCase();
+  const qty  = parseFloat(document.getElementById('sellQty').value)||0;
+  if (!goods[code]) return;
+  const g = goods[code];
+  const rev = qty*(g.sellPrice||0), profit = rev - qty*(g.costPrice||0);
+  document.getElementById('spp-rev').textContent = qty?fmt(rev):'—';
+  const pe = document.getElementById('spp-profit');
+  if (qty) { pe.textContent=(profit>=0?'+':'')+fmt(profit); pe.className='spp-val '+(profit>=0?'c-accent':'c-danger'); }
+  else { pe.textContent='—'; pe.className='spp-val'; }
+}
+
+async function sellGood() {
+  const code = document.getElementById('sellCode').value.trim().toLowerCase();
+  const qty  = parseFloat(document.getElementById('sellQty').value);
+  if (!code||!goods[code]) { showToast('Good not found','error'); return; }
+  if (!qty||qty<=0)        { showToast('Enter quantity','error'); return; }
+  const g = goods[code];
+  if (qty>g.qty) { showToast(`Only ${fmtQty(g.qty,g.type)} available!`,'error'); return; }
+
+  const btn = document.getElementById('sellBtn');
+  btn.disabled = true;
+  const revenue = qty*(g.sellPrice||0);
+  const profit  = revenue - qty*(g.costPrice||0);
+  const sale = { code, qty, revenue, profit, ts: Date.now() };
+  const prevQty = g.qty;
+  g.qty = parseFloat((g.qty-qty).toFixed(4));
+
+  try {
+    await Promise.all([dbSaveGood(code), dbSaveSale(sale)]);
+    // reload sale with db-generated id
+    const { data } = await db.from('sales').select('id').eq('ts', sale.ts).eq('code', code).single();
+    sale.id = data?.id || ('local_'+sale.ts);
+    sales.unshift(sale);
+    showToast(`✅ Sold ${fmtQty(qty,g.type)} of ${code.toUpperCase()} · ${fmt(revenue)}`,'success');
+    document.getElementById('sellQty').value='';
+    onSellCodeInput();
+  } catch(e) {
+    g.qty = prevQty; // rollback
+    showToast('❌ Sale failed — check connection','error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function quickSell(code) { switchTab('sell'); document.getElementById('sellCode').value=code; onSellCodeInput(); }
+
+// ══════════════════════════════════════════════
+//  ANALYTICS
+// ══════════════════════════════════════════════
+function setPeriod(p) {
+  activePeriod = p;
+  const periods = ['day','week','month','year','all'];
+  document.querySelectorAll('.period-btn').forEach((b,i) => b.classList.toggle('active', periods[i]===p));
+  renderAnalytics();
+}
+
+function periodStart(p) {
+  const now = new Date();
+  if (p==='all')   return 0;
+  if (p==='day')   { const d=new Date(now); d.setHours(0,0,0,0); return d.getTime(); }
+  if (p==='week')  { const d=new Date(now); d.setDate(d.getDate()-d.getDay()); d.setHours(0,0,0,0); return d.getTime(); }
+  if (p==='month') return new Date(now.getFullYear(),now.getMonth(),1).getTime();
+  if (p==='year')  return new Date(now.getFullYear(),0,1).getTime();
+  return 0;
+}
+
+function renderAnalytics() {
+  const labels = {day:'Today',week:'This Week',month:'This Month',year:'This Year',all:'All Time'};
+  const start  = periodStart(activePeriod);
+  const f = sales.filter(s => s.ts >= start);
+
+  const totalRev    = f.reduce((a,s)=>a+s.revenue,0);
+  const totalProfit = f.reduce((a,s)=>a+s.profit,0);
+  const totalCost   = totalRev-totalProfit;
+  const totalQty    = f.reduce((a,s)=>a+s.qty,0);
+  const margin      = totalRev ? ((totalProfit/totalRev)*100).toFixed(1) : 0;
+  const avgSale     = f.length ? totalRev/f.length : 0;
+
+  document.getElementById('heroLabel').textContent   = labels[activePeriod]+' Revenue';
+  document.getElementById('heroRevenue').textContent = fmt(totalRev);
+  const hp = document.getElementById('heroProfit');
+  hp.textContent = (totalProfit>=0?'+':'')+fmt(totalProfit);
+  hp.style.color = totalProfit>=0?'var(--accent)':'var(--danger)';
+  document.getElementById('heroTxn').textContent   = f.length+' transaction'+(f.length!==1?'s':'');
+  document.getElementById('ac-cost').textContent   = fmt(totalCost);
+  document.getElementById('ac-margin').textContent = margin+'%';
+  document.getElementById('ac-units').textContent  = totalQty%1===0?totalQty:totalQty.toFixed(2);
+  document.getElementById('ac-avg').textContent    = fmt(avgSale);
+
+  const byCode = {};
+  f.forEach(s => {
+    if (!byCode[s.code]) byCode[s.code]={revenue:0,profit:0,qty:0};
+    byCode[s.code].revenue+=s.revenue; byCode[s.code].profit+=s.profit; byCode[s.code].qty+=s.qty;
+  });
+  const sorted = Object.entries(byCode).sort((a,b)=>b[1].revenue-a[1].revenue).slice(0,5);
+  document.getElementById('topGoods').innerHTML = sorted.length
+    ? sorted.map(([code,d],i) => `<div class="top-good-row">
+        <div class="tg-rank">#${i+1}</div>
+        <div style="flex:1"><div class="tg-code">${esc(code)}</div><div style="font-size:10px;color:var(--muted)">${d.qty%1===0?d.qty:d.qty.toFixed(2)} sold</div></div>
+        <div style="text-align:right">
+          <div style="font-family:'Space Mono',monospace;font-size:12px;color:var(--accent)">${fmt(d.revenue)}</div>
+          <div style="font-family:'Space Mono',monospace;font-size:11px;color:${d.profit>=0?'var(--accent)':'var(--danger)'}">${d.profit>=0?'+':''}${fmt(d.profit)} profit</div>
+        </div>
+      </div>`).join('')
+    : '<div class="no-data">No sales in this period</div>';
+
+  const txContainer = document.getElementById('txHistory');
+  if (!f.length) { txContainer.innerHTML='<div class="no-data">No transactions yet</div>'; return; }
+  txContainer.className = editModeActive ? 'edit-mode-on' : '';
+  txContainer.innerHTML = [...f].sort((a,b)=>b.ts-a.ts).map(s => {
+    const g = goods[s.code];
+    const d = new Date(s.ts);
+    const ts = d.toLocaleDateString()+' '+d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+    return `<div class="tx-row ${editModeActive?'edit-mode':''}">
+      <button class="tx-del-btn" onclick="openDeleteTx('${s.id}')">🗑</button>
+      <div class="tx-info"><div class="tx-code">${esc(s.code)}</div><div class="tx-time">${ts}</div></div>
+      <div class="tx-right">
+        <div class="tx-revenue">${fmt(s.revenue)}</div>
+        <div class="tx-profit" style="color:${s.profit>=0?'var(--accent)':'var(--danger)'}">${s.profit>=0?'+':''}${fmt(s.profit)}</div>
+        <div class="tx-qty">${s.qty%1===0?s.qty:s.qty.toFixed(2)} ${g?(g.type==='liquid'?'L':'u'):''}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// ══════════════════════════════════════════════
+//  EDIT MODE
+// ══════════════════════════════════════════════
+function toggleEditMode() {
+  editModeActive = !editModeActive;
+  const bar = document.getElementById('manageBar');
+  const btn = document.getElementById('editModeToggle');
+  if (editModeActive) {
+    bar.classList.add('visible');
+    btn.textContent = '✕ Done';
+    btn.style.cssText = 'color:var(--muted2);border-color:var(--border);background:transparent;';
+  } else { exitEditMode(); }
+  renderAnalytics();
+}
+function exitEditMode() {
+  editModeActive = false;
+  const bar = document.getElementById('manageBar');
+  const btn = document.getElementById('editModeToggle');
+  if (bar) bar.classList.remove('visible');
+  if (btn) { btn.textContent='✏️ Manage'; btn.style.cssText=''; }
+}
+
+// ══════════════════════════════════════════════
+//  DELETE TX
+// ══════════════════════════════════════════════
+function openDeleteTx(id) {
+  deleteTxTarget = id;
+  const s = sales.find(x => x.id === id);
+  if (!s) return;
+  const d = new Date(s.ts);
+  document.getElementById('deleteTxSub').textContent =
+    `Remove sale of ${s.qty%1===0?s.qty:s.qty.toFixed(2)} × ${s.code.toUpperCase()} on ${d.toLocaleDateString()}? Revenue: ${fmt(s.revenue)}, Profit: ${fmt(s.profit)}.`;
+  document.getElementById('deleteTxModal').classList.add('open');
+}
+async function confirmDeleteTx() {
+  if (!deleteTxTarget) return;
+  const id = deleteTxTarget;
+  closeModal('deleteTxModal');
+  try {
+    await dbDeleteSale(id);
+    sales = sales.filter(s => s.id !== id);
+    showToast('🗑 Transaction deleted','warn');
+    renderAnalytics();
+  } catch(e) { showToast('❌ Delete failed','error'); }
+}
+
+// ══════════════════════════════════════════════
+//  CLEAR ALL IN PERIOD
+// ══════════════════════════════════════════════
+function openClearAllModal() {
+  const labels = {day:'today',week:'this week',month:'this month',year:'this year',all:'all time'};
+  const count  = sales.filter(s => s.ts >= periodStart(activePeriod)).length;
+  document.getElementById('clearAllSub').textContent =
+    `Delete all ${count} transaction${count!==1?'s':''} from ${labels[activePeriod]}? This cannot be undone.`;
+  document.getElementById('clearAllModal').classList.add('open');
+}
+async function confirmClearAll() {
+  const start = periodStart(activePeriod);
+  closeModal('clearAllModal');
+  try {
+    await dbDeleteSalesByPeriod(start);
+    sales = sales.filter(s => s.ts < start);
+    exitEditMode();
+    showToast('🗑 Transactions cleared','warn');
+    renderAnalytics();
+  } catch(e) { showToast('❌ Failed','error'); }
+}
+
+// ══════════════════════════════════════════════
+//  DELETE GOOD
+// ══════════════════════════════════════════════
+function openDeleteGood(code) {
+  deleteTarget = code;
+  const txCount = sales.filter(s => s.code === code).length;
+  document.getElementById('deleteSub').textContent =
+    `Remove "${code.toUpperCase()}" from inventory? It has ${txCount} transaction record${txCount!==1?'s':''} in analytics — delete those separately if needed.`;
+  document.getElementById('deleteModal').classList.add('open');
+}
+async function confirmDelete() {
+  if (!deleteTarget) return;
+  const code = deleteTarget;
+  closeModal('deleteModal');
+  try {
+    await dbDeleteGood(code);
+    delete goods[code];
+    showToast(`🗑 ${code.toUpperCase()} removed`,'warn');
+    renderInventory();
+  } catch(e) { showToast('❌ Delete failed','error'); }
+}
+
+// ══════════════════════════════════════════════
+//  QUICK ADD
+// ══════════════════════════════════════════════
+function openQuickAdd(code) {
+  quickAddTarget = code;
+  document.getElementById('quickAddSub').textContent = `Add stock to ${code.toUpperCase()}`;
+  document.getElementById('quickAddUnit').textContent = goods[code].type==='liquid'?'L':'units';
+  document.getElementById('quickAddQty').value='';
+  document.getElementById('quickAddModal').classList.add('open');
+}
+async function confirmQuickAdd() {
+  const qty = parseFloat(document.getElementById('quickAddQty').value);
+  if (!qty||qty<=0) { showToast('Enter quantity','error'); return; }
+  const code = quickAddTarget;
+  goods[code].qty = parseFloat((goods[code].qty+qty).toFixed(4));
+  closeModal('quickAddModal');
+  try {
+    await dbSaveGood(code);
+    showToast(`✅ +${qty} added to ${code.toUpperCase()}`,'success');
+    renderInventory();
+  } catch(e) {
+    goods[code].qty = parseFloat((goods[code].qty-qty).toFixed(4));
+    showToast('❌ Save failed','error');
+  }
+}
+
+// ══════════════════════════════════════════════
+//  MODAL HELPERS
+// ══════════════════════════════════════════════
+function closeModal(id) {
+  document.getElementById(id).classList.remove('open');
+  if (id==='deleteTxModal') deleteTxTarget=null;
+  if (id==='deleteModal')   deleteTarget=null;
+}
+
+// ══════════════════════════════════════════════
+//  UTILS
+// ══════════════════════════════════════════════
+let toastTimer;
+function showToast(msg, type='') {
+  const t = document.getElementById('toast');
+  t.textContent=msg; t.className='toast show '+type;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(()=>t.className='toast', 2800);
+}
+function fmt(n) {
+  if (n==null||isNaN(n)) return '—';
+  return '$'+Math.abs(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+}
+function fmtQty(n, type) {
+  return type==='liquid'?(n%1===0?n:n.toFixed(1)):(n%1===0?n:n.toFixed(2));
+}
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+</script>
+</body>
+</html>
