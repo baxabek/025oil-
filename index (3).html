@@ -1,998 +1,1068 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Goods Manager</title>
-<!-- Telegram WebApp SDK -->
-<script src="https://telegram.org/js/telegram-web-app.js"></script>
-<!-- Supabase -->
-<script>
-// Inline Supabase client — avoids CDN issues inside Telegram browser
-window._supabaseUrl = 'https://xpvbqbnuychlemqalvak.supabase.co';
-window._supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhwdmJxYm51eWNobGVtcWFsdmFrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMxNjI5MjIsImV4cCI6MjA4ODczODkyMn0.x9ZJsHFORKd4_7CWXpD7c4QnpGm1LUtLC4QfPB8OM48';
-</script>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<style>
-  @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@400;500;600;700&display=swap');
+"""
+TOVAR BOT — Clean Final Version
+Voice + Text commands for auto parts shop
 
-  :root {
-    --bg: #080b10;
-    --surface: #0f1420;
-    --surface2: #171e2e;
-    --border: #243050;
-    --accent: #00e5a0;
-    --accent-dim: rgba(0,229,160,0.1);
-    --blue: #4d9fff;
-    --blue-dim: rgba(77,159,255,0.1);
-    --danger: #ff5470;
-    --danger-dim: rgba(255,84,112,0.1);
-    --gold: #ffc84d;
-    --gold-dim: rgba(255,200,77,0.1);
-    --purple: #b48bfa;
-    --purple-dim: rgba(180,139,250,0.1);
-    --text: #dde3f0;
-    --muted: #5a6480;
-    --muted2: #7b88a8;
-  }
+CHANGES:
+  1. GPT model: gpt-4o -> gpt-4o-mini (cheaper)
+  2. Live stock removed from GPT prompt (not needed for parsing)
+  3. db_all_goods() cached for 30s (stops double DB calls)
+"""
 
-  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
-  html, body { height: 100%; }
-  body { font-family: 'DM Sans', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; overflow-x: hidden; -webkit-font-smoothing: antialiased; }
+import os, json, time, tempfile, logging, difflib
+from datetime import datetime
+from collections import Counter
 
-  /* ── LOADING SCREEN ── */
-  #loadingScreen {
-    position: fixed; inset: 0; background: var(--bg);
-    display: flex; flex-direction: column; align-items: center; justify-content: center;
-    z-index: 9999; gap: 16px;
-  }
-  .spinner { width: 38px; height: 38px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  .loading-text { font-family: 'Space Mono', monospace; font-size: 12px; color: var(--muted); }
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler,
+    CallbackQueryHandler, filters, ContextTypes
+)
+from openai import AsyncOpenAI
+from supabase import create_client, Client
+from dotenv import load_dotenv
 
-  /* ── ERROR SCREEN ── */
-  #errorScreen {
-    position: fixed; inset: 0; background: var(--bg);
-    display: none; flex-direction: column; align-items: center; justify-content: center;
-    z-index: 9998; padding: 32px; text-align: center; gap: 12px;
-  }
-  .error-icon { font-size: 44px; }
-  .error-title { font-family: 'Space Mono', monospace; font-size: 14px; color: var(--danger); }
-  .error-msg { font-size: 13px; color: var(--muted2); line-height: 1.6; }
-  .error-retry { margin-top: 8px; padding: 12px 28px; background: var(--accent); color: #05100a; border: none; border-radius: 12px; font-family: 'DM Sans', sans-serif; font-size: 14px; font-weight: 700; cursor: pointer; }
+load_dotenv()
 
-  /* ── HEADER ── */
-  .header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 12px 16px 0; position: sticky; top: 0; z-index: 100; }
-  .header-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
-  .logo { font-family: 'Space Mono', monospace; font-size: 14px; font-weight: 700; color: var(--accent); letter-spacing: 1px; }
-  .logo em { color: var(--muted2); font-style: normal; }
-  .header-right { display: flex; align-items: center; gap: 8px; }
-  .sync-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex-shrink: 0; transition: background 0.3s; }
-  .sync-dot.syncing { background: var(--gold); animation: pulse 1s infinite; }
-  .sync-dot.error { background: var(--danger); }
-  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
-  .item-pill { font-family: 'Space Mono', monospace; font-size: 10px; background: var(--surface2); border: 1px solid var(--border); color: var(--muted2); padding: 3px 10px; border-radius: 20px; }
-  .item-pill b { color: var(--text); }
+# ─────────────────────────────────────────
+#  CONFIG
+# ─────────────────────────────────────────
+BOT_TOKEN      = os.environ.get("BOT_TOKEN", "PUT_YOUR_TELEGRAM_TOKEN_HERE")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "PUT_YOUR_OPENAI_KEY_HERE")
+SUPA_URL       = os.environ.get("SUPA_URL", "PUT_YOUR_SUPABASE_URL_HERE")
+SUPA_KEY       = os.environ.get("SUPA_KEY", "PUT_YOUR_SUPABASE_KEY_HERE")
 
-  .tabs { display: flex; margin: 0 -16px; padding: 0 16px; overflow-x: auto; scrollbar-width: none; }
-  .tabs::-webkit-scrollbar { display: none; }
-  .tab { flex-shrink: 0; padding: 10px 14px 11px; border: none; background: transparent; color: var(--muted); font-family: 'DM Sans', sans-serif; font-size: 13px; font-weight: 500; cursor: pointer; border-bottom: 2px solid transparent; transition: all 0.2s; white-space: nowrap; }
-  .tab.active { color: var(--text); border-bottom-color: var(--accent); }
-
-  /* ── MAIN ── */
-  .main { padding: 14px 14px 90px; }
-  .panel { display: none; animation: fadeIn 0.2s ease; }
-  .panel.active { display: block; }
-  @keyframes fadeIn { from { opacity:0; transform:translateY(4px); } to { opacity:1; transform:translateY(0); } }
-  @keyframes slideIn { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:translateY(0); } }
-
-  /* SEARCH */
-  .search-wrap { position: relative; margin-bottom: 12px; }
-  .search-wrap input { width: 100%; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px 10px 38px; color: var(--text); font-family: 'Space Mono', monospace; font-size: 12px; outline: none; transition: border-color 0.2s; -webkit-appearance: none; }
-  .search-wrap input::placeholder { color: var(--muted); font-size: 11px; font-family: 'DM Sans', sans-serif; }
-  .search-wrap input:focus { border-color: var(--accent); }
-  .search-icon { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); font-size: 13px; pointer-events: none; }
-
-  /* STAT STRIP */
-  .stat-strip { display: grid; grid-template-columns: repeat(3,1fr); gap: 8px; margin-bottom: 14px; }
-  .stat-chip { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 10px 10px 8px; }
-  .stat-chip-label { font-size: 10px; color: var(--muted); margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
-  .stat-chip-val { font-family: 'Space Mono', monospace; font-size: 15px; font-weight: 700; }
-  .c-accent{color:var(--accent)} .c-blue{color:var(--blue)} .c-purple{color:var(--purple)} .c-gold{color:var(--gold)} .c-danger{color:var(--danger)}
-
-  /* GOODS */
-  .goods-list { display: flex; flex-direction: column; gap: 8px; }
-  .good-card { background: var(--surface); border: 1px solid var(--border); border-radius: 13px; overflow: hidden; animation: slideIn 0.25s ease; }
-  .good-card-main { display: flex; align-items: center; gap: 11px; padding: 11px 12px; }
-  .good-icon { width: 38px; height: 38px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 17px; flex-shrink: 0; }
-  .good-icon.liquid { background: var(--blue-dim); } .good-icon.solid { background: var(--purple-dim); }
-  .good-info { flex: 1; min-width: 0; }
-  .good-code { font-family: 'Space Mono', monospace; font-size: 13px; font-weight: 700; color: var(--text); text-transform: uppercase; letter-spacing: 0.5px; }
-  .good-name { font-size: 11px; color: var(--muted2); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .good-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
-  .qty-block { text-align: right; }
-  .qty-val { font-family: 'Space Mono', monospace; font-size: 16px; font-weight: 700; line-height: 1; }
-  .qty-val.liquid{color:var(--blue)} .qty-val.solid{color:var(--purple)}
-  .qty-unit { font-size: 10px; color: var(--muted); margin-top: 2px; }
-  .good-actions { display: flex; gap: 5px; }
-  .icon-btn { width: 30px; height: 30px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface2); color: var(--muted2); font-size: 13px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: all 0.15s; font-weight: 700; }
-  .icon-btn:active { transform: scale(0.9); }
-  .good-price-bar { display: flex; border-top: 1px solid var(--border); background: var(--surface2); }
-  .price-cell { flex: 1; padding: 6px 12px; font-size: 11px; border-right: 1px solid var(--border); }
-  .price-cell:last-child { border-right: none; }
-  .price-label { color: var(--muted); margin-bottom: 1px; }
-  .price-value { font-family: 'Space Mono', monospace; font-weight: 700; }
-  .price-value.cost{color:var(--danger)} .price-value.sell{color:var(--accent)}
-  .margin-pos{color:var(--accent)} .margin-neg{color:var(--danger)}
-  .low-badge { font-size: 9px; background: var(--danger-dim); color: var(--danger); border: 1px solid rgba(255,84,112,0.25); padding: 1px 6px; border-radius: 20px; margin-left: 5px; vertical-align: middle; }
-
-  /* FORMS */
-  .form-card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 16px; margin-bottom: 10px; }
-  .form-section-title { font-family: 'Space Mono', monospace; font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 1.2px; margin-bottom: 14px; }
-  .form-row { display: flex; gap: 8px; }
-  .form-row .form-group { flex: 1; }
-  .form-group { margin-bottom: 11px; }
-  .form-label { font-size: 11px; color: var(--muted2); margin-bottom: 5px; display: block; }
-  .form-input { width: 100%; background: var(--surface2); border: 1px solid var(--border); border-radius: 9px; padding: 10px 12px; color: var(--text); font-family: 'Space Mono', monospace; font-size: 13px; outline: none; transition: border-color 0.2s; text-transform: uppercase; -webkit-appearance: none; }
-  .form-input::placeholder { color: var(--muted); font-size: 12px; text-transform: none; }
-  .form-input:focus { border-color: var(--accent); }
-  .form-input.no-upper { text-transform: none; }
-  .form-input.price-input:focus { border-color: var(--gold); }
-  .type-toggle { display: flex; gap: 8px; }
-  .type-btn { flex: 1; padding: 9px; border-radius: 9px; border: 1px solid var(--border); background: var(--surface2); color: var(--muted); font-family: 'DM Sans', sans-serif; font-size: 13px; font-weight: 500; cursor: pointer; transition: all 0.2s; text-align: center; }
-  .type-btn.active-liquid { background: var(--blue-dim); border-color: var(--blue); color: var(--blue); }
-  .type-btn.active-solid { background: var(--purple-dim); border-color: var(--purple); color: var(--purple); }
-  .qty-row { display: flex; align-items: center; gap: 8px; }
-  .qty-row .form-input { flex: 1; }
-  .unit-tag { font-family: 'Space Mono', monospace; font-size: 12px; padding: 10px 12px; background: var(--surface2); border: 1px solid var(--border); border-radius: 9px; color: var(--muted2); white-space: nowrap; }
-  .divider { height: 1px; background: var(--border); margin: 14px 0; }
-
-  /* SELL */
-  .sell-found-card { background: var(--surface); border: 1px solid var(--accent); border-radius: 12px; padding: 14px; margin-bottom: 10px; display: none; animation: slideIn 0.2s ease; }
-  .sell-found-header { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 12px; }
-  .sell-code { font-family: 'Space Mono', monospace; font-size: 15px; font-weight: 700; text-transform: uppercase; }
-  .sell-name { font-size: 12px; color: var(--muted2); margin-top: 2px; }
-  .sell-stock-block { margin-left: auto; text-align: right; }
-  .sell-stock-label { font-size: 10px; color: var(--muted); }
-  .sell-stock-val { font-family: 'Space Mono', monospace; font-size: 14px; font-weight: 700; }
-  .sell-price-preview { display: flex; gap: 8px; background: var(--surface2); border-radius: 9px; padding: 10px 12px; margin-bottom: 12px; }
-  .spp-item { flex: 1; text-align: center; }
-  .spp-label { color: var(--muted); font-size: 10px; margin-bottom: 3px; }
-  .spp-val { font-family: 'Space Mono', monospace; font-weight: 700; font-size: 13px; }
-
-  /* BUTTONS */
-  .btn { width: 100%; padding: 13px; border-radius: 12px; border: none; font-family: 'DM Sans', sans-serif; font-size: 15px; font-weight: 600; cursor: pointer; transition: all 0.15s; -webkit-appearance: none; }
-  .btn:active { transform: scale(0.98); opacity: 0.9; }
-  .btn:disabled { opacity: 0.5; pointer-events: none; }
-  .btn-add { background: var(--accent); color: #05100a; }
-  .btn-sell { background: var(--danger); color: #fff; }
-
-  /* ANALYTICS */
-  .period-tabs { display: flex; gap: 6px; margin-bottom: 16px; }
-  .period-btn { flex: 1; padding: 8px 4px; border-radius: 9px; border: 1px solid var(--border); background: var(--surface2); color: var(--muted2); font-family: 'Space Mono', monospace; font-size: 11px; cursor: pointer; transition: all 0.2s; }
-  .period-btn.active { background: var(--gold-dim); border-color: var(--gold); color: var(--gold); }
-  .analytics-hero { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 18px 16px; margin-bottom: 10px; text-align: center; }
-  .hero-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px; }
-  .hero-revenue { font-family: 'Space Mono', monospace; font-size: 32px; font-weight: 700; color: var(--accent); line-height: 1; margin-bottom: 4px; }
-  .hero-profit { font-family: 'Space Mono', monospace; font-size: 16px; font-weight: 700; }
-  .hero-profit-label { font-size: 11px; color: var(--muted); margin-right: 4px; }
-  .hero-txn { font-size: 12px; color: var(--muted2); margin-top: 6px; }
-  .analytics-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
-  .analytics-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; }
-  .ac-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
-  .ac-val { font-family: 'Space Mono', monospace; font-size: 18px; font-weight: 700; }
-  .ac-sub { font-size: 11px; color: var(--muted2); margin-top: 3px; }
-  .section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
-  .section-title { font-family: 'Space Mono', monospace; font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
-  .section-action { font-size: 11px; color: var(--danger); cursor: pointer; font-weight: 600; padding: 3px 8px; border: 1px solid rgba(255,84,112,0.3); border-radius: 6px; background: var(--danger-dim); }
-  .top-good-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 6px; }
-  .tg-rank { font-family: 'Space Mono', monospace; font-size: 11px; color: var(--muted); width: 18px; flex-shrink: 0; }
-  .tg-code { font-family: 'Space Mono', monospace; font-size: 12px; font-weight: 700; text-transform: uppercase; }
-  .tx-row { display: flex; align-items: center; gap: 10px; padding: 9px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 5px; transition: border-color 0.2s; }
-  .tx-row.edit-mode { border-color: rgba(255,84,112,0.35); }
-  .tx-info { flex: 1; min-width: 0; }
-  .tx-code { font-family: 'Space Mono', monospace; font-size: 12px; font-weight: 700; text-transform: uppercase; }
-  .tx-time { font-size: 10px; color: var(--muted); margin-top: 1px; }
-  .tx-right { text-align: right; flex-shrink: 0; }
-  .tx-revenue { font-family: 'Space Mono', monospace; font-size: 13px; font-weight: 700; color: var(--accent); }
-  .tx-profit { font-family: 'Space Mono', monospace; font-size: 11px; }
-  .tx-qty { font-size: 11px; color: var(--muted2); }
-  .tx-del-btn { width: 28px; height: 28px; border-radius: 7px; border: 1px solid rgba(255,84,112,0.4); background: var(--danger-dim); color: var(--danger); font-size: 14px; cursor: pointer; display: none; align-items: center; justify-content: center; flex-shrink: 0; }
-  .tx-del-btn:active { transform: scale(0.9); }
-  .edit-mode-on .tx-del-btn { display: flex; }
-  .manage-bar { background: var(--surface2); border: 1px solid var(--gold); border-radius: 12px; padding: 12px 14px; margin-bottom: 12px; display: none; }
-  .manage-bar.visible { display: block; animation: slideIn 0.2s ease; }
-  .manage-bar-title { font-family: 'Space Mono', monospace; font-size: 11px; color: var(--gold); margin-bottom: 10px; }
-  .manage-bar-actions { display: flex; gap: 8px; }
-  .manage-btn { flex: 1; padding: 9px; border-radius: 9px; border: none; font-family: 'DM Sans', sans-serif; font-size: 12px; font-weight: 600; cursor: pointer; }
-  .manage-btn:active { transform: scale(0.97); }
-  .manage-btn-cancel { background: var(--surface); border: 1px solid var(--border); color: var(--muted2); }
-  .manage-btn-clear { background: var(--danger-dim); border: 1px solid rgba(255,84,112,0.4); color: var(--danger); }
-
-  /* TOAST */
-  .toast { position: fixed; bottom: 82px; left: 50%; transform: translateX(-50%) translateY(20px); background: var(--surface2); border: 1px solid var(--border); border-radius: 10px; padding: 10px 20px; font-size: 13px; color: var(--text); z-index: 9999; opacity: 0; transition: all 0.3s; white-space: nowrap; pointer-events: none; max-width: 90vw; text-align: center; }
-  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
-  .toast.success { border-color: var(--accent); color: var(--accent); }
-  .toast.error { border-color: var(--danger); color: var(--danger); }
-  .toast.warn { border-color: var(--gold); color: var(--gold); }
-
-  /* MODALS */
-  .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.78); z-index: 300; display: none; align-items: flex-end; }
-  .modal-overlay.open { display: flex; }
-  .modal { background: var(--surface); border-radius: 20px 20px 0 0; padding: 18px 16px 36px; width: 100%; border-top: 1px solid var(--border); animation: slideUp 0.28s ease; }
-  @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
-  .modal-handle { width: 36px; height: 4px; background: var(--border); border-radius: 2px; margin: 0 auto 14px; }
-  .modal-title { font-family: 'Space Mono', monospace; font-size: 13px; color: var(--text); margin-bottom: 4px; text-transform: uppercase; }
-  .modal-sub { font-size: 12px; color: var(--muted2); margin-bottom: 14px; line-height: 1.55; }
-  .modal-actions { display: flex; gap: 8px; margin-top: 14px; }
-  .btn-outline { flex: 1; background: transparent; border: 1px solid var(--border); color: var(--muted2); padding: 13px; border-radius: 12px; font-size: 14px; font-family: 'DM Sans', sans-serif; cursor: pointer; }
-
-  .empty-state { text-align: center; padding: 40px 20px; color: var(--muted); }
-  .empty-state .emoji { font-size: 38px; margin-bottom: 10px; }
-  .empty-state p { font-size: 13px; }
-  .no-data { text-align: center; padding: 28px 16px; color: var(--muted); font-size: 13px; }
-</style>
-</head>
-<body>
-
-<!-- LOADING -->
-<div id="loadingScreen">
-  <div class="spinner"></div>
-  <div class="loading-text" id="loadingText">Loading…</div>
-</div>
-
-<!-- ERROR -->
-<div id="errorScreen" style="display:none;flex-direction:column;align-items:center;justify-content:center;padding:32px;text-align:center;gap:12px;position:fixed;inset:0;background:var(--bg);z-index:9998;">
-  <div style="font-size:44px;">⚠️</div>
-  <div style="font-family:'Space Mono',monospace;font-size:14px;color:var(--danger);">Connection Failed</div>
-  <div style="font-size:13px;color:var(--muted2);line-height:1.6;" id="errorMsg">Could not connect to the database.</div>
-  <button style="margin-top:8px;padding:12px 28px;background:var(--accent);color:#05100a;border:none;border-radius:12px;font-family:'DM Sans',sans-serif;font-size:14px;font-weight:700;cursor:pointer;" onclick="location.reload()">🔄 Retry</button>
-</div>
-
-<!-- APP -->
-<div id="appShell" style="display:none;">
-  <div class="header">
-    <div class="header-row">
-      <div class="logo">GOODS<em>/MGR</em></div>
-      <div class="header-right">
-        <span class="sync-dot" id="syncDot" title="Sync status"></span>
-        <div class="item-pill"><b id="totalCount">0</b> items</div>
-      </div>
-    </div>
-    <div class="tabs">
-      <button class="tab active" onclick="switchTab('inventory')">📦 Inventory</button>
-      <button class="tab" onclick="switchTab('add')">➕ Add</button>
-      <button class="tab" onclick="switchTab('sell')">💸 Sell</button>
-      <button class="tab" onclick="switchTab('analytics')">📊 Analytics</button>
-    </div>
-  </div>
-
-  <div class="main">
-    <!-- INVENTORY -->
-    <div class="panel active" id="panel-inventory">
-      <div class="stat-strip">
-        <div class="stat-chip"><div class="stat-chip-label">Goods</div><div class="stat-chip-val c-accent" id="s-total">0</div></div>
-        <div class="stat-chip"><div class="stat-chip-label">Liquid 💧</div><div class="stat-chip-val c-blue" id="s-liquid">0 L</div></div>
-        <div class="stat-chip"><div class="stat-chip-label">Solid 📦</div><div class="stat-chip-val c-purple" id="s-solid">0</div></div>
-      </div>
-      <div class="search-wrap">
-        <span class="search-icon">🔍</span>
-        <input type="text" id="searchInput" placeholder="Search by code or name…" oninput="renderInventory()">
-      </div>
-      <div class="goods-list" id="goodsList"></div>
-    </div>
-
-    <!-- ADD -->
-    <div class="panel" id="panel-add">
-      <div class="form-card">
-        <div class="form-section-title">Register Good</div>
-        <div class="form-group">
-          <label class="form-label">Code *</label>
-          <input class="form-input" id="addCode" type="text" placeholder="e.g. cs103, bb12" maxlength="20" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false">
-        </div>
-        <div class="form-group">
-          <label class="form-label">Name / Description</label>
-          <input class="form-input no-upper" id="addName" type="text" placeholder="Optional" autocomplete="off">
-        </div>
-        <div class="form-group">
-          <label class="form-label">Type</label>
-          <div class="type-toggle">
-            <button class="type-btn" id="typesolidBtn" onclick="setType('solid')">📦 Solid</button>
-            <button class="type-btn" id="typeliquidBtn" onclick="setType('liquid')">💧 Liquid</button>
-          </div>
-        </div>
-        <div class="form-group">
-          <label class="form-label">Initial Quantity</label>
-          <div class="qty-row">
-            <input class="form-input" id="addQty" type="number" min="0" step="0.1" placeholder="0" inputmode="decimal">
-            <div class="unit-tag" id="addUnit">units</div>
-          </div>
-        </div>
-        <div class="divider"></div>
-        <div class="form-section-title" style="margin-bottom:12px">💰 Pricing</div>
-        <div class="form-row">
-          <div class="form-group">
-            <label class="form-label">Cost price (per unit)</label>
-            <input class="form-input price-input" id="addCostPrice" type="number" min="0" step="0.01" placeholder="0.00" inputmode="decimal">
-          </div>
-          <div class="form-group">
-            <label class="form-label">Sell price (per unit)</label>
-            <input class="form-input price-input" id="addSellPrice" type="number" min="0" step="0.01" placeholder="0.00" inputmode="decimal">
-          </div>
-        </div>
-        <div id="marginPreview" style="font-family:'Space Mono',monospace;font-size:11px;color:var(--muted);min-height:16px;"></div>
-      </div>
-      <button class="btn btn-add" id="addBtn" onclick="addGood()">➕ Save Good</button>
-    </div>
-
-    <!-- SELL -->
-    <div class="panel" id="panel-sell">
-      <div class="form-card">
-        <div class="form-section-title">Sell / Extract Stock</div>
-        <div class="form-group" style="margin-bottom:0">
-          <label class="form-label">Good Code</label>
-          <input class="form-input" id="sellCode" type="text" placeholder="e.g. cs103" oninput="onSellCodeInput()" maxlength="20" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false">
-        </div>
-      </div>
-      <div class="sell-found-card" id="sellResult">
-        <div class="sell-found-header">
-          <div>
-            <div class="sell-code" id="sellResultCode"></div>
-            <div class="sell-name" id="sellResultName"></div>
-          </div>
-          <div class="sell-stock-block">
-            <div class="sell-stock-label">In stock</div>
-            <div class="sell-stock-val" id="sellResultStock"></div>
-          </div>
-        </div>
-        <div class="sell-price-preview">
-          <div class="spp-item"><div class="spp-label">Cost/unit</div><div class="spp-val c-danger" id="spp-cost">—</div></div>
-          <div class="spp-item"><div class="spp-label">Sell/unit</div><div class="spp-val c-accent" id="spp-sell">—</div></div>
-          <div class="spp-item"><div class="spp-label">Revenue</div><div class="spp-val c-gold" id="spp-rev">—</div></div>
-          <div class="spp-item"><div class="spp-label">Profit</div><div class="spp-val" id="spp-profit">—</div></div>
-        </div>
-        <div class="form-group">
-          <label class="form-label">Quantity to sell</label>
-          <div class="qty-row">
-            <input class="form-input" id="sellQty" type="number" min="0.01" step="0.1" placeholder="0" oninput="updateSellPreview()" inputmode="decimal">
-            <div class="unit-tag" id="sellUnit">units</div>
-          </div>
-        </div>
-        <button class="btn btn-sell" id="sellBtn" onclick="sellGood()">💸 Confirm Sale</button>
-      </div>
-    </div>
-
-    <!-- ANALYTICS -->
-    <div class="panel" id="panel-analytics">
-      <div class="period-tabs">
-        <button class="period-btn active" onclick="setPeriod('day')">Day</button>
-        <button class="period-btn" onclick="setPeriod('week')">Week</button>
-        <button class="period-btn" onclick="setPeriod('month')">Month</button>
-        <button class="period-btn" onclick="setPeriod('year')">Year</button>
-        <button class="period-btn" onclick="setPeriod('all')">All</button>
-      </div>
-      <div class="analytics-hero">
-        <div class="hero-label" id="heroLabel">Today's Revenue</div>
-        <div class="hero-revenue" id="heroRevenue">$0.00</div>
-        <div style="margin-top:5px">
-          <span class="hero-profit-label">Profit:</span>
-          <span class="hero-profit" id="heroProfit">$0.00</span>
-        </div>
-        <div class="hero-txn" id="heroTxn">0 transactions</div>
-      </div>
-      <div class="analytics-grid">
-        <div class="analytics-card"><div class="ac-label">Total Cost</div><div class="ac-val c-danger" id="ac-cost">$0.00</div><div class="ac-sub">Base price paid</div></div>
-        <div class="analytics-card"><div class="ac-label">Margin %</div><div class="ac-val c-gold" id="ac-margin">0%</div><div class="ac-sub">Profit / Revenue</div></div>
-        <div class="analytics-card"><div class="ac-label">Units Sold</div><div class="ac-val c-purple" id="ac-units">0</div><div class="ac-sub">Items / litres</div></div>
-        <div class="analytics-card"><div class="ac-label">Avg Sale</div><div class="ac-val c-blue" id="ac-avg">$0.00</div><div class="ac-sub">Revenue / txn</div></div>
-      </div>
-      <div class="section-header"><div class="section-title">🏆 Top Goods</div></div>
-      <div id="topGoods"></div>
-      <div class="section-header" style="margin-top:14px">
-        <div class="section-title">🕓 Transactions</div>
-        <span id="editModeToggle" class="section-action" onclick="toggleEditMode()">✏️ Manage</span>
-      </div>
-      <div class="manage-bar" id="manageBar">
-        <div class="manage-bar-title">⚠️ Tap 🗑 on any transaction to delete it</div>
-        <div class="manage-bar-actions">
-          <button class="manage-btn manage-btn-cancel" onclick="toggleEditMode()">✕ Done</button>
-          <button class="manage-btn manage-btn-clear" onclick="openClearAllModal()">🗑 Clear Period</button>
-        </div>
-      </div>
-      <div id="txHistory"></div>
-    </div>
-  </div>
-</div>
-
-<div class="toast" id="toast"></div>
-
-<!-- DELETE GOOD MODAL -->
-<div class="modal-overlay" id="deleteModal" onclick="closeModal('deleteModal')">
-  <div class="modal" onclick="event.stopPropagation()">
-    <div class="modal-handle"></div>
-    <div class="modal-title">Delete Product</div>
-    <div class="modal-sub" id="deleteSub"></div>
-    <div class="modal-actions">
-      <button class="btn-outline" onclick="closeModal('deleteModal')">Cancel</button>
-      <button class="btn btn-sell" onclick="confirmDelete()">Delete</button>
-    </div>
-  </div>
-</div>
-
-<!-- DELETE TX MODAL -->
-<div class="modal-overlay" id="deleteTxModal" onclick="closeModal('deleteTxModal')">
-  <div class="modal" onclick="event.stopPropagation()">
-    <div class="modal-handle"></div>
-    <div class="modal-title">Delete Transaction</div>
-    <div class="modal-sub" id="deleteTxSub"></div>
-    <div class="modal-actions">
-      <button class="btn-outline" onclick="closeModal('deleteTxModal')">Cancel</button>
-      <button class="btn btn-sell" onclick="confirmDeleteTx()">Delete</button>
-    </div>
-  </div>
-</div>
-
-<!-- CLEAR ALL MODAL -->
-<div class="modal-overlay" id="clearAllModal" onclick="closeModal('clearAllModal')">
-  <div class="modal" onclick="event.stopPropagation()">
-    <div class="modal-handle"></div>
-    <div class="modal-title">⚠️ Clear Transactions</div>
-    <div class="modal-sub" id="clearAllSub"></div>
-    <div class="modal-actions">
-      <button class="btn-outline" onclick="closeModal('clearAllModal')">Cancel</button>
-      <button class="btn btn-sell" onclick="confirmClearAll()">Clear All</button>
-    </div>
-  </div>
-</div>
-
-<!-- QUICK ADD MODAL -->
-<div class="modal-overlay" id="quickAddModal" onclick="closeModal('quickAddModal')">
-  <div class="modal" onclick="event.stopPropagation()">
-    <div class="modal-handle"></div>
-    <div class="modal-title">Add Stock</div>
-    <div class="modal-sub" id="quickAddSub">Add quantity to stock</div>
-    <div class="qty-row">
-      <input class="form-input" id="quickAddQty" type="number" min="0.01" step="0.1" placeholder="Quantity" inputmode="decimal">
-      <div class="unit-tag" id="quickAddUnit">units</div>
-    </div>
-    <div class="modal-actions">
-      <button class="btn-outline" onclick="closeModal('quickAddModal')">Cancel</button>
-      <button class="btn btn-add" onclick="confirmQuickAdd()">Add Stock</button>
-    </div>
-  </div>
-</div>
-
-<script>
-// ══════════════════════════════════════════════
-//  SUPABASE INIT
-// ══════════════════════════════════════════════
-const SUPA_URL = 'https://xpvbqbnuychlemqalvak.supabase.co';
-const SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhwdmJxYm51eWNobGVtcWFsdmFrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMxNjI5MjIsImV4cCI6MjA4ODczODkyMn0.x9ZJsHFORKd4_7CWXpD7c4QnpGm1LUtLC4QfPB8OM48';
-const db = supabase.createClient(SUPA_URL, SUPA_KEY);
-
-// ══════════════════════════════════════════════
-//  STATE
-// ══════════════════════════════════════════════
-let goods = {};
-let sales = [];
-let selectedType = 'solid';
-let activePeriod = 'day';
-let deleteTarget = null;
-let quickAddTarget = null;
-let deleteTxTarget = null;
-let editModeActive = false;
-
-// ══════════════════════════════════════════════
-//  SYNC DOT
-// ══════════════════════════════════════════════
-function setSync(s) {
-  const d = document.getElementById('syncDot');
-  d.className = 'sync-dot' + (s==='syncing'?' syncing':s==='error'?' error':'');
+# ─────────────────────────────────────────
+#  ALLOWED USERS
+# ─────────────────────────────────────────
+ALLOWED_USERS = {
+    748420452:  "manager",   # Developer
+    1383897653: "manager",   # Manager
+    6495008286: "seller",    # Seller
 }
 
-// ══════════════════════════════════════════════
-//  DB HELPERS
-// ══════════════════════════════════════════════
-async function dbLoad() {
-  const [g, s] = await Promise.all([
-    db.from('goods').select('*'),
-    db.from('sales').select('*').order('ts', { ascending: false })
-  ]);
-  if (g.error) throw g.error;
-  if (s.error) throw s.error;
+SELLER_ALLOWED = {"sell", "find_product", "unknown"}
 
-  goods = {};
-  (g.data || []).forEach(r => {
-    goods[r.id] = {
-      type: r.type, qty: Number(r.qty), name: r.name || '',
-      costPrice: r.cost_price != null ? Number(r.cost_price) : null,
-      sellPrice: r.sell_price != null ? Number(r.sell_price) : null
-    };
-  });
-  sales = (s.data || []).map(r => ({
-    id: r.id, code: r.code, qty: Number(r.qty),
-    revenue: Number(r.revenue), profit: Number(r.profit), ts: Number(r.ts)
-  }));
-}
+# ─────────────────────────────────────────
+#  LOGGING
+# ─────────────────────────────────────────
+logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
+log = logging.getLogger(__name__)
 
-async function dbSaveGood(code) {
-  setSync('syncing');
-  const g = goods[code];
-  const { error } = await db.from('goods').upsert({
-    id: code, type: g.type, qty: g.qty,
-    name: g.name || null, cost_price: g.costPrice, sell_price: g.sellPrice
-  });
-  if (error) { setSync('error'); throw error; }
-  setSync('ok');
-}
+openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+db: Client = create_client(SUPA_URL, SUPA_KEY)
 
-async function dbDeleteGood(code) {
-  setSync('syncing');
-  const { error } = await db.from('goods').delete().eq('id', code);
-  if (error) { setSync('error'); throw error; }
-  setSync('ok');
-}
+# Stores pending confirmations: { user_id: {"parsed": dict, "transcript": str} }
+pending = {}
 
-async function dbSaveSale(sale) {
-  setSync('syncing');
-  const { error } = await db.from('sales').insert({
-    code: sale.code, qty: sale.qty,
-    revenue: sale.revenue, profit: sale.profit, ts: sale.ts
-  });
-  if (error) { setSync('error'); throw error; }
-  setSync('ok');
-}
+# ─────────────────────────────────────────
+#  CHANGE 3: SIMPLE IN-MEMORY CACHE
+#  db_all_goods() result is cached for 30s
+#  so one message never hits Supabase twice
+# ─────────────────────────────────────────
+_goods_cache = {"data": None, "ts": 0}
+CACHE_TTL = 30  # seconds
 
-async function dbDeleteSale(id) {
-  setSync('syncing');
-  const { error } = await db.from('sales').delete().eq('id', id);
-  if (error) { setSync('error'); throw error; }
-  setSync('ok');
-}
+def db_all_goods_cached():
+    now = time.time()
+    if _goods_cache["data"] is not None and (now - _goods_cache["ts"]) < CACHE_TTL:
+        return _goods_cache["data"]
+    result = db_all_goods()
+    _goods_cache["data"] = result
+    _goods_cache["ts"] = now
+    return result
 
-async function dbDeleteSalesByPeriod(start) {
-  setSync('syncing');
-  const { error } = await db.from('sales').delete().gte('ts', start);
-  if (error) { setSync('error'); throw error; }
-  setSync('ok');
-}
+def invalidate_goods_cache():
+    """Call this after any write (sell, add_stock, add_good) so next read is fresh."""
+    _goods_cache["data"] = None
+    _goods_cache["ts"] = 0
 
-// ══════════════════════════════════════════════
-//  BOOT
-// ══════════════════════════════════════════════
-try { window.Telegram?.WebApp?.ready(); window.Telegram?.WebApp?.expand(); } catch(e) {}
+# ─────────────────────────────────────────
+#  STATIC PRODUCT CATALOGUE (189 products)
+#  Baked in so GPT always knows your inventory
+# ─────────────────────────────────────────
+CATALOGUE = """
+KOD TIZIMI:
+1XX = MOY FILTER (MF) moy filtr maslyanyy filtr
+2XX = VOZDUSHNIY FILTER (VF) havo filtr vozdushnyy filtr
+3XX = SALON FILTER (CF) salon filtr
+4XX = YOG motor (Liqui Moly SRS Fosser Valvoline Grauman Addinol Rowe Micking Korelux Korion Lotos Totachi Avista Stanley Lukoil Zitron Zoon Synheon Petrovol)
+5XX = YOG motor (ZIC Kixx Mannol Hyundai Castrol Shell Rolf Petrodub S-oil Wolf Enoc Epsent Aveno Weazer Gazprom Total Fanfaro Auster)
+57X = YOG (Rolf Petrodub S-oil Wolf Enoc Epsent Aveno Weazer Gazprom Total Fanfaro Auster)
+8XX = ANTIFRIZ sovutuvchi suyuqlik (Felix Sibirya Valesco Cool Climate Crystal Dalifka Winner) va TRANSMISSIYA YOG (Zoon Wolf Winiron S-oil Kixx Synheon) va QOSHIMCHA (dot4 tormoz suv flush cleaner)
+9XX = AKSESUAR (stiker gerb padnomer holder salfetka avsijitel spray lac pena oyna suv latta)
 
-(async () => {
-  document.getElementById('loadingText').textContent = 'Connecting to database…';
-  try {
-    await dbLoad();
-    document.getElementById('loadingScreen').style.display = 'none';
-    document.getElementById('appShell').style.display = 'block';
-    setType('solid');
-    renderInventory();
-    ['addCostPrice','addSellPrice'].forEach(id =>
-      document.getElementById(id).addEventListener('input', updateMarginPreview)
-    );
-    setSync('ok');
-  } catch(e) {
-    console.error('Boot error:', e);
-    document.getElementById('loadingScreen').style.display = 'none';
-    document.getElementById('errorMsg').textContent =
-      'Could not reach the database. Make sure you have internet and try again.\n\nDetail: ' + (e.message || e);
-    document.getElementById('errorScreen').style.display = 'flex';
-  }
-})();
+NARX DIAPAZONI:
+MF 1XX: 15000-135000 som
+VF 2XX: 20000-150000 som
+CF 3XX: 25000-70000 som
+Yog 4XX-5XX: 50000-285000 som
+Antifriz 8XX: 10000-150000 som
+Aksesuar 9XX: 5000-65000 som
 
-// ══════════════════════════════════════════════
-//  TABS
-// ══════════════════════════════════════════════
-function switchTab(tab) {
-  const names = ['inventory','add','sell','analytics'];
-  document.querySelectorAll('.tab').forEach((t,i) => t.classList.toggle('active', names[i]===tab));
-  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-  document.getElementById('panel-'+tab).classList.add('active');
-  if (tab==='inventory') renderInventory();
-  if (tab==='analytics') { exitEditMode(); renderAnalytics(); }
-}
+MASHINA KODI:
+nexia lacetti=101, matiz damas=102, spark gentra cobalt=103, onix tracker malibu=104
+lada uzun=105, lada kalta=106, chery jetour=107, haval mitsubishi=109
+kia sonet=112, sportage tucson elantra=113, k5 sorento=114, carnival k8=115
+byd=117-118, toyota=132-134, merc=130-131
+matiz vf=201, damas vf=202, spark1L=203, spark1.25=204
+cobalt cf=304, gentra cf=306, onix cf=307, captiva cf=309
 
-function setType(type) {
-  selectedType = type;
-  document.getElementById('typesolidBtn').className = 'type-btn'+(type==='solid'?' active-solid':'');
-  document.getElementById('typeliquidBtn').className = 'type-btn'+(type==='liquid'?' active-liquid':'');
-  document.getElementById('addUnit').textContent = type==='liquid'?'L':'units';
-}
+MOY FILTER 1XX:
+  101 | Mf nexia/lacetti | 15 000 som
+  102 | Mf Matiz/damas | 15 000 som
+  103 | Mf spark/gentra/cobalt/nexia3 | 15 000 som
+  104 | Mf onix/tracker/malibu2/captiva3L | 40 000 som
+  105 | Mf jiguli lada uzun | 40 000 som
+  106 | Mf lada jiguli kalta | 25 000 som
+  107 | Mf caddy/jetour/chery | 50 000 som
+  108 | Mf chery qogʻoz | 60 000 som
+  109 | Mf haval/mitsibushi | 60 000 som
+  110 | Mf Haval qogʻoz | 70 000 som
+  111 | Mf kia temrli | 60 000 som
+  112 | Mf sonet | 60 000 som
+  113 | Mf sportage/tucson/elantra | 75 000 som
+  114 | Mf k5 qogoz/sorento2.5L | 60 000 som
+  115 | Mf kia carnival/sorento3.5L/K8 | 135 000 som
+  116 | Mf kia Bongo/Porter | 55 000 som
+  117 | Mf byd temir plastik | 95 000 som
+  118 | Mf byd temirli chempion/chazor | 95 000 som
+  119 | Byd reductor | 95 000 som
+  120 | Mf XL/Equinox 2/traverse | 55 000 som
+  121 | Mf trailblazer qogʻoz | 65 000 som
+  122 | Mf tracker1 | 40 000 som
+  123 | Mf Orlando | 40 000 som
+  124 | Mf epica | 35 000 som
+  125 | Mf renault arkana | 73 000 som
+  126 | Mf isuzu 2.5T | 55 000 som
+  127 | Mf volga qogoz | 25 000 som
+  128 | Mf Li9 sct107 | 70 000 som
+  129 | Mf sct143 prado/bestune/LI/Honji | 60 000 som
+  130 | Mf merc 104 | 50 000 som
+  131 | Mf merc 112 | 60 000 som
+  132 | Mf toyota temir | 50 000 som
+  133 | Mf toyota qogʻoz Cruiser 4L | 100 000 som
+  134 | Mf toyota qogoz cruser 200 | 75 000 som
+  135 | Mf captiva 3.2 uzun | narx_yoq
 
-function updateMarginPreview() {
-  const cost = parseFloat(document.getElementById('addCostPrice').value)||0;
-  const sell = parseFloat(document.getElementById('addSellPrice').value)||0;
-  const el = document.getElementById('marginPreview');
-  if (!cost&&!sell) { el.textContent=''; return; }
-  if (!sell) { el.innerHTML='<span style="color:var(--muted)">Add sell price to see margin</span>'; return; }
-  const m = sell-cost, pct = ((m/sell)*100).toFixed(1);
-  el.innerHTML = `Margin: <span style="color:${m>=0?'var(--accent)':'var(--danger)'}">${m>=0?'+':''}${fmt(m)} per unit (${pct}%)</span>`;
-}
+VOZDUSHNIY FILTER 2XX:
+  201 | Vf matiz | 25 000 som
+  202 | Vf damas/labo | 25 000 som
+  203 | Vf spark 1L | 30 000 som
+  204 | Vf spark 1.25L | 25 000 som
+  205 | Vf nexia 1/2 | 25 000 som
+  206 | Vf nexia 3 | 25 000 som
+  207 | Vf cobalt | 25 000 som
+  208 | Vf Lacetti/gentra | 25 000 som
+  209 | Vf epica | 40 000 som
+  210 | Vf onix/tracker | 40 000 som
+  211 | Vf monza atmo | 55 000 som
+  212 | Vf Monza 1.3T | 60 000 som
+  213 | Vf tracker 1 | 50 000 som
+  214 | Vf orlando | 45 000 som
+  215 | Vf Malibu1 2.4 | 60 000 som
+  216 | Vf malibu 2 | 95 000 som
+  217 | Vf captiva 2.4/3.2L | 65 000 som
+  218 | Captiva 3.0L | 70 000 som
+  219 | Vf Equinox | 85 000 som
+  220 | Vf traverse | 90 000 som
+  221 | Vf trailblazer | 100 000 som
+  222 | Vf tahoe | 150 000 som
+  223 | Vf tico | 25 000 som
+  224 | Vf chery 2pro | 70 000 som
+  225 | Vf chery 6pro | 65 000 som
+  226 | Vf chery 7pro | 70 000 som
+  227 | Vf Chery 8pro | 70 000 som
+  228 | Vf Jetour uzun | 65 000 som
+  229 | Vf Haval M6 | 120 000 som
+  230 | Vf Haval | 120 000 som
+  231 | Vf kia sonet | 70 000 som
+  232 | Vf kia seltos | 70 000 som
+  233 | Vf hyundai Elantra | 70 000 som
+  234 | Vf kia k5 k8 sportage sorento | 70 000 som
+  235 | Vf kia Bongo | 50 000 som
+  236 | Vf hyundai Porter | 50 000 som
+  237 | Vf Byd uzun | 85 000 som
+  238 | Vf byd chempion/chazor | 75 000 som
+  239 | Vf Honda crider | 120 000 som
+  240 | Vf Jiguli | 20 000 som
+  241 | Vf Lada niva | 25 000 som
+  242 | Vf lada vesta kesilgan | 55 000 som
+  243 | Vf lada x-ray tekis | 55 000 som
+  244 | Vf shineray/changan toʻrtburchak | 50 000 som
+  245 | Vf shieray van kesilgan | 50 000 som
 
-// ══════════════════════════════════════════════
-//  INVENTORY
-// ══════════════════════════════════════════════
-function renderInventory() {
-  const q = document.getElementById('searchInput').value.toLowerCase().trim();
-  let liq=0, sol=0;
-  Object.values(goods).forEach(g => { if(g.type==='liquid') liq+=g.qty; else sol+=g.qty; });
-  document.getElementById('s-total').textContent = Object.keys(goods).length;
-  document.getElementById('s-liquid').textContent = fmtQty(liq,'liquid')+' L';
-  document.getElementById('s-solid').textContent = sol%1===0?sol:sol.toFixed(2);
-  document.getElementById('totalCount').textContent = Object.keys(goods).length;
+SALON FILTER 3XX:
+  301 | Cf nexia 3 koʻmir | 35 000 som
+  302 | Cf nexia 3 | 25 000 som
+  303 | Cf cobalt koʻmir | 40 000 som
+  304 | Cf cobalt | 25 000 som
+  305 | Cf gentra koʻmir | 40 000 som
+  306 | Cf gentra | 25 000 som
+  307 | Cf onix | 35 000 som
+  308 | Cf onix komir | 45 000 som
+  309 | Cf captiva koʻmir | 60 000 som
+  310 | Cf captiva | 45 000 som
+  311 | Cf monza | 55 000 som
+  312 | Cf epica | 55 000 som
+  313 | Cf chery kalta koʻmir | 55 000 som
+  314 | Cf chery kalta oddiy | 50 000 som
+  315 | Cf chery uzun | 70 000 som
+  316 | Cf Kia k5 | 60 000 som
+  317 | Cf kia k5 kortech | 60 000 som
+  318 | Cf haval M6 | 65 000 som
 
-  const keys = Object.keys(goods).filter(k => !q||k.includes(q)||(goods[k].name||'').toLowerCase().includes(q)).sort();
-  const list = document.getElementById('goodsList');
-  if (!keys.length) {
-    list.innerHTML = `<div class="empty-state"><div class="emoji">${q?'🔍':'📦'}</div><p>${q?'Nothing matched':'No goods yet!'}</p></div>`;
-    return;
-  }
-  list.innerHTML = keys.map(code => {
-    const g = goods[code];
-    const isLow = g.qty <= 2;
-    const m = (g.sellPrice||0)-(g.costPrice||0);
-    const mPct = g.sellPrice ? ((m/g.sellPrice)*100).toFixed(1) : null;
-    return `<div class="good-card">
-      <div class="good-card-main">
-        <div class="good-icon ${g.type}">${g.type==='liquid'?'💧':'📦'}</div>
-        <div class="good-info">
-          <div class="good-code">${esc(code)}${isLow?'<span class="low-badge">LOW</span>':''}</div>
-          <div class="good-name">${esc(g.name||(g.type==='liquid'?'Liquid':'Solid'))}</div>
-        </div>
-        <div class="good-right">
-          <div class="qty-block">
-            <div class="qty-val ${g.type}">${fmtQty(g.qty,g.type)}</div>
-            <div class="qty-unit">${g.type==='liquid'?'litres':'units'}</div>
-          </div>
-          <div class="good-actions">
-            <button class="icon-btn" style="color:var(--accent)" onclick="openQuickAdd('${esc(code)}')">＋</button>
-            <button class="icon-btn" style="color:var(--danger)" onclick="quickSell('${esc(code)}')">－</button>
-            <button class="icon-btn" onclick="openDeleteGood('${esc(code)}')">🗑</button>
-          </div>
-        </div>
-      </div>
-      <div class="good-price-bar">
-        <div class="price-cell"><div class="price-label">Cost</div><div class="price-value cost">${g.costPrice!=null?fmt(g.costPrice):'—'}</div></div>
-        <div class="price-cell"><div class="price-label">Sell</div><div class="price-value sell">${g.sellPrice!=null?fmt(g.sellPrice):'—'}</div></div>
-        <div class="price-cell"><div class="price-label">Margin</div><div class="price-value ${m>=0?'margin-pos':'margin-neg'}">${mPct!==null?(m>=0?'+':'')+fmt(m)+' ('+mPct+'%)':'—'}</div></div>
-      </div>
-    </div>`;
-  }).join('');
-}
+YOG MOTOR 4XX:
+  401 | Liqui moly molygen 0/20 | 160 000 som
+  402 | Liqui moly molygen 5/30 | 165 000 som
+  403 | Liqui moly dx1 5/30 | 140 000 som
+  404 | Liqui moly qora 5/30 | 140 000 som
+  411 | Srs 5/30 | 105 000 som
+  412 | Srs 10/40 | 95 000 som
+  416 | Fosser 5/20 | 105 000 som
+  417 | Fosser 5/30 | 120 000 som
+  418 | Fosser 10/40 | 95 000 som
+  420 | Petrovol 5/30 | 75 000 som
+  421 | Petrowol 10/40 | 70 000 som
+  425 | Grauman 5/30 | 195 000 som
+  426 | Grauman 10/40 | 155 000 som
+  430 | Valoline 0/20 | 200 000 som
+  431 | Valvoline DX 5/30 | 185 000 som
+  432 | Valvoline 5/30 | 165 000 som
+  433 | Valvoline maxlife 10/40 | 155 000 som
+  434 | Valvoline all Climate 10/40 | 145 000 som
+  435 | Valvoline ATF/CVT | 215 000 som
+  436 | Valvoline DCT | 285 000 som
+  437 | Valvoline 75w90 | 285 000 som
+  440 | Zoon 0/20 | 120 000 som
+  441 | Zoon 5/30 | 100 000 som
+  442 | Zoon 10/40 | 90 000 som
+  443 | Zoon ATF | 135 000 som
+  444 | Zoon 75w85 | 100 000 som
+  450 | Synheon g1 5/30 | 85 000 som
+  451 | Synheon g3 10/40 | 85 000 som
+  452 | Synheon s4 10/40 | 65 000 som
+  456 | Addinol 5/30 | 145 000 som
+  457 | Addinol 10/40 | 110 000 som
+  460 | Rowe 0/20 | 165 000 som
+  461 | Rowe d1 5/30 | 140 000 som
+  462 | Rowe Essental 5/30 | 120 000 som
+  463 | Rowe super sariq 10/40 | 110 000 som
+  464 | Rowe essental 10/40 | 85 000 som
+  465 | Rowe ATF | narx_yoq
+  470 | Micking top 5/30 | 75 000 som
+  471 | Micking gold super 5/30 | 77 000 som
+  472 | Micking super power | 77 000 som
+  473 | Micking grand power | 73 000 som
+  474 | Micking 15/40 | 70 000 som
+  475 | Micking ATF 3 | 105 000 som
+  476 | Korelux 5/30 | 70 000 som
+  477 | Korelux 10/40 | 70 000 som
+  480 | Korion 5/30 | 70 000 som
+  481 | Korion 5/40 | 65 000 som
+  482 | Korion 10/40 | 70 000 som
+  483 | Korion atf | 95 000 som
+  490 | Lotos 5/30 | 105 000 som
+  491 | Lotos tc | 70 000 som
+  492 | Lotoc mc | 60 000 som
+  493 | Lotos 15/40 | 55 000 som
+  495 | Totachi 0/20 | 85 000 som
 
-// ══════════════════════════════════════════════
-//  ADD GOOD
-// ══════════════════════════════════════════════
-async function addGood() {
-  const code = document.getElementById('addCode').value.trim().toLowerCase();
-  const name = document.getElementById('addName').value.trim();
-  const qty  = parseFloat(document.getElementById('addQty').value)||0;
-  const cpVal = document.getElementById('addCostPrice').value;
-  const spVal = document.getElementById('addSellPrice').value;
-  const costPrice = cpVal!==''?parseFloat(cpVal):null;
-  const sellPrice = spVal!==''?parseFloat(spVal):null;
+YOG MOTOR 5XX:
+  500 | Zic 5/30 | 70 000 som
+  501 | Zic 10/40 | 70 000 som
+  506 | Kixx 5/30 | 88 000 som
+  507 | Kixx 10/40 | 78 000 som
+  508 | Kixx g 5/30 | 60 000 som
+  510 | Mannol 5/30 | 85 000 som
+  511 | Mannol 10/40 | 75 000 som
+  515 | Hyundai 5/30 | 75 000 som
+  516 | Hyundai 10/40 | 65 000 som
+  517 | Hyundai atf | narx_yoq
+  520 | Castrol edge dexos 5/30 | 125 000 som
+  521 | Castrol magnatec dexos 5/30 | 120 000 som
+  522 | Castrol magnatec AP 5/30 | 110 000 som
+  523 | Castrol magnatec korea 5/30 | 95 000 som
+  524 | Castrol 10/40 gtx | 80 000 som
+  530 | Avista atf | 130 000 som
+  531 | Avista 0/20 | 115 000 som
+  532 | Avista 5/30 | 110 000 som
+  533 | Avista 10/40 | 85 000 som
+  537 | Stanley 5/30 | 95 000 som
+  538 | Stanley 10/40 | 80 000 som
+  540 | Lukoil genesis unversal 5/30 | 75 000 som
+  542 | Lukoil genesis 5/40 | 65 000 som
+  545 | Lukoil luxe 10/40 | 55 000 som
+  546 | Lukoil 10/40 | 45 000 som
+  547 | Lukoil super 15/40 | 50 000 som
+  548 | Lukoil super 20/50 | 50 000 som
+  550 | Zitron z7 10/40 | 60 000 som
+  551 | Zitron z4 10/40 | 55 000 som
+  552 | Zitron 15/40 | 50 000 som
+  553 | Zitron z6 20/50 | 50 000 som
+  560 | Shell ultra Germany 5/30 | 105 000 som
+  561 | Shell ultra turk 5/30 | 115 000 som
+  562 | Shell hx7 5/30 | 85 000 som
+  563 | Shell high milage 10/40 | 75 000 som
+  564 | Shell hx7 10/40 | 90 000 som
+  565 | Shell hx5 10/40 | 75 000 som
+  570 | Rolf 5/30 | 85 000 som
+  571 | Rolf 10/40 | 65 000 som
+  573 | Petrodub 10/40 | 80 000 som
+  575 | S-oil 10/40 | 70 000 som
+  577 | Wolf 5/30 | 105 000 som
+  579 | Enoc 5/30 | 105 000 som
+  580 | Enoc 10/40 | 95 000 som
+  581 | Epsent 10/40 | 90 000 som
+  583 | Aveno 10/40 | 105 000 som
+  586 | Weazer 15/40 | 50 000 som
+  587 | Weazer 20/50 | 50 000 som
+  589 | Gazprom 15/40 | 50 000 som
+  590 | Total 9000 5/30 | 90 000 som
+  592 | Fanfaro 10/40 | 60 000 som
+  593 | Auster atf6 | 95 000 som
 
-  if (!code) { showToast('Enter a code!','error'); return; }
-  if (!/^[a-z0-9]+$/.test(code)) { showToast('Code: letters & numbers only','error'); return; }
+ANTIFRIZ sovutuvchi 8XX:
+  800 | Felix red 5kg | 140 000 som
+  801 | Felix blue 5kg | 125 000 som
+  802 | Sibirya red 5kg | 140 000 som
+  803 | Sibirya red 1kg | 30 000 som
+  804 | Sibirya blue 5kg | 140 000 som
+  805 | Sibirya blue 1kg | 30 000 som
+  806 | Valeaco red 5kg | 125 000 som
+  807 | Valesco red 1kg | 25 000 som
+  808 | Valesco blue 5kg | 125 000 som
+  809 | Valesco blue 1kg | 25 000 som
+  810 | Cool climate red 5kg | 100 000 som
+  812 | Cool climat blue 5kg | 100 000 som
+  813 | Cool climate blue 1kg | 20 000 som
+  814 | Cool climate red 1kg | 20 000 som
+  815 | Crystal red | 15 000 som
+  816 | Crystal blue | 15 000 som
+  817 | Dalifka red | 10 000 som
+  818 | Dalifka blue | 10 000 som
+  819 | Valesco yashil 1kg | 25 000 som
+  820 | Winner red 5kg | 140 000 som
+  821 | Winner red 1kg | 30 000 som
+  851 | Zoon 75/85 transmissiya | 130 000 som
+  852 | Wolf electrum transmissiya | 150 000 som
+  854 | Winiron atf2 | 70 000 som
+  855 | S-oil 75/85 | 110 000 som
+  856 | Oddiy 85/140 | 30 000 som
+  857 | Oddiy 80/90 | 30 000 som
+  858 | Oddiy Atf2 | 20 000 som
+  860 | Kixx 85/140 | 130 000 som
+  864 | Totachi cvt | 110 000 som
+  866 | Dizel 0.9 | 15 000 som
+  867 | Synheon 85/140 | 100 000 som
+  868 | Oyna suv 1L | 10 000 som
+  871 | dot4 100gr tormoz suv | 15 000 som
+  872 | Toshbaqa dot4 | 35 000 som
+  873 | Wezer dot4 | 50 000 som
+  874 | Mator flush | 40 000 som
+  875 | Radiator flush | 45 000 som
+  876 | Carp cleaner | 20 000 som
+  877 | Octan | 25 000 som
 
-  const btn = document.getElementById('addBtn');
-  btn.disabled = true;
-  try {
-    if (goods[code]) {
-      goods[code].qty += qty;
-      if (name) goods[code].name = name;
-      if (costPrice!==null) goods[code].costPrice = costPrice;
-      if (sellPrice!==null) goods[code].sellPrice = sellPrice;
-    } else {
-      goods[code] = { type: selectedType, qty, name, costPrice, sellPrice };
+AKSESUAR 9XX:
+  900 | Sticker | 20 000 som
+  901 | Gerbli sticker | 30 000 som
+  902 | Padnomer temirli | 60 000 som
+  903 | Holder oynaga | 40 000 som
+  904 | Holder magnet | 25 000 som
+  905 | Salfetka dumaloq | 20 000 som
+  906 | Salfetka tortburchak | 20 000 som
+  907 | Loreva katta avsijitel | 65 000 som
+  909 | Loreva kichik avsijitel | 40 000 som
+  910 | Dirham avsijitel | 40 000 som
+  911 | Edem avsijitel | 45 000 som
+  912 | Black odor avsijitel | 60 000 som
+  913 | Card | 20 000 som
+  914 | X bag avsijitel | 35 000 som
+  915 | Dynamic avsijitel | 35 000 som
+  916 | Cesare avsijitel | 55 000 som
+  917 | Soyobon avsijitel | 30 000 som
+  930 | Getsun lac katta | 65 000 som
+  931 | Getsun lac kichik | 35 000 som
+  932 | Vesle lac | 35 000 som
+  933 | Vesle pena | 35 000 som
+  934 | Vesle unversal chistka | 40 000 som
+  935 | Vesle glass oyna | 25 000 som
+  936 | Spray balon | 20 000 som
+  937 | Gupka | 5 000 som
+  938 | Makaronka latta | 20 000 som
+  939 | Momiq latta | 20 000 som
+  940 | Delfin kichik | 25 000 som
+  941 | Dlefin katta | 45 000 som
+"""
+
+# ─────────────────────────────────────────
+#  WHISPER PROMPT
+# ─────────────────────────────────────────
+WHISPER_PROMPT = (
+    "Ozbekcha ovoz buyrug'i. Avtoservis ehtiyot qismlari dokon. "
+    "Tovar kodlari: 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 "
+    "116 117 118 119 120 121 122 123 124 125 126 127 128 129 130 131 132 133 134 135 "
+    "201 202 203 204 205 206 207 208 209 210 211 212 213 214 215 216 217 218 219 220 "
+    "221 222 223 224 225 226 227 228 229 230 231 232 233 234 235 236 237 238 239 "
+    "240 241 242 243 244 245 "
+    "301 302 303 304 305 306 307 308 309 310 311 312 313 314 315 316 317 318 "
+    "401 402 403 404 411 412 416 417 418 420 421 425 426 430 431 432 433 434 "
+    "435 436 437 440 441 442 443 444 450 451 452 456 457 460 461 462 463 464 "
+    "465 470 471 472 473 474 475 476 477 480 481 482 483 490 491 492 493 495 "
+    "500 501 506 507 508 510 511 515 516 517 520 521 522 523 524 "
+    "530 531 532 533 537 538 540 542 545 546 547 548 550 551 552 553 560 561 562 563 564 565 "
+    "570 571 573 575 577 579 580 581 583 586 587 589 590 592 593 "
+    "800 801 802 803 804 805 806 807 808 809 810 812 813 814 815 816 817 818 819 820 821 "
+    "851 852 854 855 856 857 858 860 864 866 867 868 871 872 873 874 875 876 877 "
+    "900 901 902 903 904 905 906 907 909 910 911 912 913 914 915 916 917 "
+    "930 931 932 933 934 935 936 937 938 939 940 941. "
+    "Moy filter MF, vozdushni filter VF, salon filter CF, yog, antifriz sovutuvchi. "
+    "Brendlar: Liqui Moly SRS Fosser Valvoline Grauman Addinol Rowe Micking Korelux "
+    "Korion Lotos Totachi Avista Stanley Lukoil Zitron ZIC Kixx Mannol Hyundai Castrol Shell Petrovol "
+    "Rolf Petrodub S-oil Wolf Enoc Epsent Aveno Weazer Gazprom Total Fanfaro Auster "
+    "Felix Sibirya Valesco Cool Climate Crystal Dalifka Winner Zoon Winiron Synheon. "
+    "Mashinalar: nexia lacetti matiz damas spark gentra cobalt onix tracker malibu captiva "
+    "haval chery jetour kia sonet seltos sportage sorento elantra byd toyota lada jiguli "
+    "bongo porter equinox traverse trailblazer tahoe orlando monza epica tico renault isuzu honda. "
+    "Buyruqlar: minus sotish ketdi, plus qoshish keldi, hisobot, qarz. "
+    "Raqamlar: bir=1 ikki=2 uch=3 tort=4 besh=5 olti=6 yetti=7 sakkiz=8 toqqiz=9 on=10 yuz=100. "
+    "yuz bir=101 yuz ikki=102 yuz tort=104 ikki yuz=200 ikki yuz tort=204 "
+    "uch yuz=300 uch yuz tort=304 tort yuz=400 besh yuz=500 sakkiz yuz=800 toqqiz yuz=900."
+)
+
+# ─────────────────────────────────────────
+#  HELPERS
+# ─────────────────────────────────────────
+def get_role(user_id):
+    return ALLOWED_USERS.get(user_id)
+
+def fmt_price(n):
+    if n is None:
+        return "—"
+    try:
+        return f"{int(float(n)):,}".replace(",", " ") + " som"
+    except Exception:
+        return str(n)
+
+def unit_label(good_type):
+    return "L" if good_type == "liquid" else "dona"
+
+def now_ms():
+    return int(time.time() * 1000)
+
+# ─────────────────────────────────────────
+#  SUPABASE READ
+# ─────────────────────────────────────────
+def db_get_good(code):
+    code = str(code).strip().lower()
+    try:
+        res = db.table("goods").select("*").eq("id", code).execute()
+        if res.data and len(res.data) > 0:
+            d = res.data[0]
+            return {
+                "id": str(d["id"]),
+                "name": d.get("name") or "",
+                "type": d.get("type") or "solid",
+                "qty": float(d.get("qty") or 0),
+                "cost_price": d.get("cost_price"),
+                "sell_price": d.get("sell_price"),
+            }
+    except Exception as e:
+        log.error(f"db_get_good error: {e}")
+    return None
+
+def db_all_goods():
+    try:
+        res = db.table("goods").select("id,name,qty,type,sell_price,cost_price").execute()
+        return res.data or []
+    except Exception as e:
+        log.error(f"db_all_goods error: {e}")
+        return []
+
+def db_fuzzy_search(query):
+    # CHANGE 3: use cache here instead of a fresh DB call
+    all_goods = db_all_goods_cached()
+    query = str(query).lower().strip()
+    results = []
+    seen = set()
+    for g in all_goods:
+        gid = str(g.get("id") or "").lower()
+        name = str(g.get("name") or "").lower()
+        if gid in seen:
+            continue
+        if query in gid or query in name:
+            results.append(g)
+            seen.add(gid)
+            continue
+        r1 = difflib.SequenceMatcher(None, query, gid).ratio()
+        r2 = difflib.SequenceMatcher(None, query, name).ratio()
+        if r1 > 0.6 or r2 > 0.6:
+            results.append(g)
+            seen.add(gid)
+    return results[:5]
+
+# ─────────────────────────────────────────
+#  SUPABASE WRITE
+# ─────────────────────────────────────────
+def db_sell(code, qty, actual_price, role, note=""):
+    code = str(code).strip().lower()
+    good = db_get_good(code)
+    if not good:
+        raise ValueError(f"NOT_FOUND|{code}")
+    if good["qty"] <= 0:
+        raise ValueError(f"OUT_OF_STOCK|{code}|{good['type']}")
+    if qty > good["qty"]:
+        raise ValueError(f"INSUFFICIENT|{code}|{good['qty']}|{good['type']}")
+
+    set_price = good["sell_price"]
+    price = actual_price if actual_price is not None else (float(set_price) if set_price else 0)
+    revenue = qty * price
+    profit = revenue - qty * (float(good["cost_price"]) if good["cost_price"] else 0)
+    new_qty = round(good["qty"] - qty, 4)
+
+    db.table("goods").update({"qty": new_qty}).eq("id", code).execute()
+    sale_res = db.table("sales").insert({
+        "code": code, "qty": qty, "revenue": revenue, "profit": profit,
+        "ts": now_ms(), "actual_price": price, "set_price": set_price,
+        "note": note or None, "sold_by": role,
+    }).execute()
+
+    invalidate_goods_cache()  # CHANGE 3: stock changed, clear cache
+
+    return {
+        "code": code, "name": good["name"], "type": good["type"],
+        "qty_sold": qty, "revenue": revenue, "profit": profit, "new_qty": new_qty,
     }
-    await dbSaveGood(code);
-    ['addCode','addName','addQty','addCostPrice','addSellPrice'].forEach(id => document.getElementById(id).value='');
-    document.getElementById('marginPreview').textContent='';
-    showToast(`✅ ${code.toUpperCase()} saved!`,'success');
-    switchTab('inventory');
-  } catch(e) {
-    showToast('❌ Save failed','error');
-  } finally {
-    btn.disabled = false;
-  }
-}
 
-// ══════════════════════════════════════════════
-//  SELL
-// ══════════════════════════════════════════════
-function onSellCodeInput() {
-  const code = document.getElementById('sellCode').value.trim().toLowerCase();
-  const el = document.getElementById('sellResult');
-  if (!code||!goods[code]) { el.style.display='none'; return; }
-  const g = goods[code];
-  el.style.display = 'block';
-  document.getElementById('sellResultCode').textContent = code.toUpperCase();
-  document.getElementById('sellResultName').textContent = g.name||(g.type==='liquid'?'Liquid good':'Solid good');
-  const sv = document.getElementById('sellResultStock');
-  sv.textContent = g.type==='liquid'?fmtQty(g.qty,'liquid')+' L':g.qty+' units';
-  sv.className = 'sell-stock-val '+g.type;
-  document.getElementById('sellUnit').textContent = g.type==='liquid'?'L':'units';
-  document.getElementById('spp-cost').textContent = g.costPrice!=null?fmt(g.costPrice):'—';
-  document.getElementById('spp-sell').textContent = g.sellPrice!=null?fmt(g.sellPrice):'—';
-  document.getElementById('sellQty').value='';
-  updateSellPreview();
-}
+def db_add_good(code, name, good_type, qty, cost_price, sell_price):
+    code = str(code).strip().lower()
+    existing = db.table("goods").select("id").eq("id", code).execute()
+    if existing.data and len(existing.data) > 0:
+        raise ValueError(f"Bu kod allaqachon mavjud: {code.upper()}")
+    db.table("goods").insert({
+        "id": code, "name": name or None, "type": good_type,
+        "qty": qty, "cost_price": cost_price, "sell_price": sell_price,
+    }).execute()
+    invalidate_goods_cache()  # CHANGE 3: new good added, clear cache
+    return {"code": code, "name": name, "type": good_type, "qty": qty}
 
-function updateSellPreview() {
-  const code = document.getElementById('sellCode').value.trim().toLowerCase();
-  const qty  = parseFloat(document.getElementById('sellQty').value)||0;
-  if (!goods[code]) return;
-  const g = goods[code];
-  const rev = qty*(g.sellPrice||0), profit = rev - qty*(g.costPrice||0);
-  document.getElementById('spp-rev').textContent = qty?fmt(rev):'—';
-  const pe = document.getElementById('spp-profit');
-  if (qty) { pe.textContent=(profit>=0?'+':'')+fmt(profit); pe.className='spp-val '+(profit>=0?'c-accent':'c-danger'); }
-  else { pe.textContent='—'; pe.className='spp-val'; }
-}
+def db_add_stock(code, qty_to_add):
+    code = str(code).strip().lower()
+    good = db_get_good(code)
+    if not good:
+        raise ValueError(f"NOT_FOUND|{code}")
+    new_qty = round(good["qty"] + qty_to_add, 4)
+    db.table("goods").update({"qty": new_qty}).eq("id", code).execute()
+    invalidate_goods_cache()  # CHANGE 3: stock changed, clear cache
+    return {"code": code, "name": good["name"], "type": good["type"],
+            "added": qty_to_add, "new_qty": new_qty}
 
-async function sellGood() {
-  const code = document.getElementById('sellCode').value.trim().toLowerCase();
-  const qty  = parseFloat(document.getElementById('sellQty').value);
-  if (!code||!goods[code]) { showToast('Good not found','error'); return; }
-  if (!qty||qty<=0)        { showToast('Enter quantity','error'); return; }
-  const g = goods[code];
-  if (qty>g.qty) { showToast(`Only ${fmtQty(g.qty,g.type)} available!`,'error'); return; }
+def db_add_debt(customer, amount, note=""):
+    res = db.table("debts").insert({
+        "customer_name": customer, "amount": amount, "paid_amount": 0,
+        "note": note or None, "status": "active",
+        "created_at": datetime.utcnow().isoformat(),
+    }).execute()
+    return {"customer": customer, "amount": amount}
 
-  const btn = document.getElementById('sellBtn');
-  btn.disabled = true;
-  const revenue = qty*(g.sellPrice||0);
-  const profit  = revenue - qty*(g.costPrice||0);
-  const sale = { code, qty, revenue, profit, ts: Date.now() };
-  const prevQty = g.qty;
-  g.qty = parseFloat((g.qty-qty).toFixed(4));
+# Tashkent timezone (UTC+5) — used for "today" boundary calculation
+TASHKENT_OFFSET = 5 * 3600  # seconds
 
-  try {
-    await Promise.all([dbSaveGood(code), dbSaveSale(sale)]);
-    // reload sale with db-generated id
-    const { data } = await db.from('sales').select('id').eq('ts', sale.ts).eq('code', code).single();
-    sale.id = data?.id || ('local_'+sale.ts);
-    sales.unshift(sale);
-    showToast(`✅ Sold ${fmtQty(qty,g.type)} of ${code.toUpperCase()} · ${fmt(revenue)}`,'success');
-    document.getElementById('sellQty').value='';
-    onSellCodeInput();
-  } catch(e) {
-    g.qty = prevQty; // rollback
-    showToast('❌ Sale failed — check connection','error');
-  } finally {
-    btn.disabled = false;
-  }
-}
+def db_today_stats():
+    import time as _time
+    now_utc = _time.time()
+    now_tashkent = now_utc + TASHKENT_OFFSET
+    midnight_tashkent = now_tashkent - (now_tashkent % 86400)
+    today_start = int((midnight_tashkent - TASHKENT_OFFSET) * 1000)
 
-function quickSell(code) { switchTab('sell'); document.getElementById('sellCode').value=code; onSellCodeInput(); }
+    s_res = db.table("sales").select("revenue,profit,code").gte("ts", today_start).execute()
+    sales_data = s_res.data or []
 
-// ══════════════════════════════════════════════
-//  ANALYTICS
-// ══════════════════════════════════════════════
-function setPeriod(p) {
-  activePeriod = p;
-  const periods = ['day','week','month','year','all'];
-  document.querySelectorAll('.period-btn').forEach((b,i) => b.classList.toggle('active', periods[i]===p));
-  renderAnalytics();
-}
+    svc_data = []
+    try:
+        v_res = db.table("service_sales").select("price").gte("ts", today_start).execute()
+        svc_data = v_res.data or []
+    except Exception as e:
+        log.warning(f"service_sales table not available: {e}")
 
-function periodStart(p) {
-  const now = new Date();
-  if (p==='all')   return 0;
-  if (p==='day')   { const d=new Date(now); d.setHours(0,0,0,0); return d.getTime(); }
-  if (p==='week')  { const d=new Date(now); d.setDate(d.getDate()-d.getDay()); d.setHours(0,0,0,0); return d.getTime(); }
-  if (p==='month') return new Date(now.getFullYear(),now.getMonth(),1).getTime();
-  if (p==='year')  return new Date(now.getFullYear(),0,1).getTime();
-  return 0;
-}
+    total_rev    = sum(float(s["revenue"]) for s in sales_data)
+    total_profit = sum(float(s["profit"])  for s in sales_data)
+    svc_rev      = sum(float(s["price"])   for s in svc_data)
+    tx_count = len(sales_data) + len(svc_data)
+    code_rev = Counter()
+    for s in sales_data:
+        code_rev[str(s["code"])] += float(s["revenue"])
+    top = code_rev.most_common(1)
+    return {
+        "revenue": total_rev + svc_rev, "profit": total_profit,
+        "tx_count": tx_count,
+        "top_product": top[0][0].upper() if top else None,
+        "top_revenue": top[0][1] if top else 0,
+    }
 
-function renderAnalytics() {
-  const labels = {day:'Today',week:'This Week',month:'This Month',year:'This Year',all:'All Time'};
-  const start  = periodStart(activePeriod);
-  const f = sales.filter(s => s.ts >= start);
+def db_stock_report():
+    res = db.table("goods").select("id,name,qty,type,sell_price").order("id").execute()
+    return res.data or []
 
-  const totalRev    = f.reduce((a,s)=>a+s.revenue,0);
-  const totalProfit = f.reduce((a,s)=>a+s.profit,0);
-  const totalCost   = totalRev-totalProfit;
-  const totalQty    = f.reduce((a,s)=>a+s.qty,0);
-  const margin      = totalRev ? ((totalProfit/totalRev)*100).toFixed(1) : 0;
-  const avgSale     = f.length ? totalRev/f.length : 0;
+# ─────────────────────────────────────────
+#  CHANGE 1: gpt-4o -> gpt-4o-mini
+#  CHANGE 2: removed live_stock and low_warn
+#            from the prompt entirely.
+#            GPT only needs to understand intent.
+#            Stock validation happens in db_sell().
+# ─────────────────────────────────────────
+async def parse_command(text):
+    prompt = f"""Sen avtoservis ehtiyot qismlari do'koni uchun buyruq tahlilchisi.
+Buyruqlar asosan o'zbek tilida (95%). Ba'zan rus yoki aralash.
 
-  document.getElementById('heroLabel').textContent   = labels[activePeriod]+' Revenue';
-  document.getElementById('heroRevenue').textContent = fmt(totalRev);
-  const hp = document.getElementById('heroProfit');
-  hp.textContent = (totalProfit>=0?'+':'')+fmt(totalProfit);
-  hp.style.color = totalProfit>=0?'var(--accent)':'var(--danger)';
-  document.getElementById('heroTxn').textContent   = f.length+' transaction'+(f.length!==1?'s':'');
-  document.getElementById('ac-cost').textContent   = fmt(totalCost);
-  document.getElementById('ac-margin').textContent = margin+'%';
-  document.getElementById('ac-units').textContent  = totalQty%1===0?totalQty:totalQty.toFixed(2);
-  document.getElementById('ac-avg').textContent    = fmt(avgSale);
+{CATALOGUE}
 
-  const byCode = {};
-  f.forEach(s => {
-    if (!byCode[s.code]) byCode[s.code]={revenue:0,profit:0,qty:0};
-    byCode[s.code].revenue+=s.revenue; byCode[s.code].profit+=s.profit; byCode[s.code].qty+=s.qty;
-  });
-  const sorted = Object.entries(byCode).sort((a,b)=>b[1].revenue-a[1].revenue).slice(0,5);
-  document.getElementById('topGoods').innerHTML = sorted.length
-    ? sorted.map(([code,d],i) => `<div class="top-good-row">
-        <div class="tg-rank">#${i+1}</div>
-        <div style="flex:1"><div class="tg-code">${esc(code)}</div><div style="font-size:10px;color:var(--muted)">${d.qty%1===0?d.qty:d.qty.toFixed(2)} sold</div></div>
-        <div style="text-align:right">
-          <div style="font-family:'Space Mono',monospace;font-size:12px;color:var(--accent)">${fmt(d.revenue)}</div>
-          <div style="font-family:'Space Mono',monospace;font-size:11px;color:${d.profit>=0?'var(--accent)':'var(--danger)'}">${d.profit>=0?'+':''}${fmt(d.profit)} profit</div>
-        </div>
-      </div>`).join('')
-    : '<div class="no-data">No sales in this period</div>';
+RAQAM TALAFFUZI:
+yuz bir=101, yuz ikki=102, yuz uch=103, yuz tort=104, yuz besh=105
+yuz olti=106, yuz yetti=107, yuz sakkiz=108, yuz toqqiz=109, yuz on=110
+yuz on bir=111, yuz on ikki=112, yuz on uch=113, yuz on tort=114, yuz on besh=115
+yuz yigirma=120, yuz yigirma bir=121, yuz yigirma ikki=122, yuz yigirma uch=123
+yuz sakkiz tort=184 (yuz + sakkiz + tort = 1-8-4)
+ikki yuz=200, ikki yuz bir=201, ikki yuz tort=204, ikki yuz on=210
+uch yuz=300, uch yuz tort=304, tort yuz=400, besh yuz=500
 
-  const txContainer = document.getElementById('txHistory');
-  if (!f.length) { txContainer.innerHTML='<div class="no-data">No transactions yet</div>'; return; }
-  txContainer.className = editModeActive ? 'edit-mode-on' : '';
-  txContainer.innerHTML = [...f].sort((a,b)=>b.ts-a.ts).map(s => {
-    const g = goods[s.code];
-    const d = new Date(s.ts);
-    const ts = d.toLocaleDateString()+' '+d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
-    return `<div class="tx-row ${editModeActive?'edit-mode':''}">
-      <button class="tx-del-btn" onclick="openDeleteTx('${s.id}')">🗑</button>
-      <div class="tx-info"><div class="tx-code">${esc(s.code)}</div><div class="tx-time">${ts}</div></div>
-      <div class="tx-right">
-        <div class="tx-revenue">${fmt(s.revenue)}</div>
-        <div class="tx-profit" style="color:${s.profit>=0?'var(--accent)':'var(--danger)'}">${s.profit>=0?'+':''}${fmt(s.profit)}</div>
-        <div class="tx-qty">${s.qty%1===0?s.qty:s.qty.toFixed(2)} ${g?(g.type==='liquid'?'L':'u'):''}</div>
-      </div>
-    </div>`;
-  }).join('');
-}
+MASHINA NOMI -> KOD MISOLLARI:
+cobalt moy filtr -> 103
+nexia moy -> 101
+spark havo -> 203 yoki 204
+gentra salon -> 306
+kastrol 5/30 -> 520-523 orasidan top
+likvi moli 5/30 -> 402
 
-// ══════════════════════════════════════════════
-//  EDIT MODE
-// ══════════════════════════════════════════════
-function toggleEditMode() {
-  editModeActive = !editModeActive;
-  const bar = document.getElementById('manageBar');
-  const btn = document.getElementById('editModeToggle');
-  if (editModeActive) {
-    bar.classList.add('visible');
-    btn.textContent = '✕ Done';
-    btn.style.cssText = 'color:var(--muted2);border-color:var(--border);background:transparent;';
-  } else { exitEditMode(); }
-  renderAnalytics();
-}
-function exitEditMode() {
-  editModeActive = false;
-  const bar = document.getElementById('manageBar');
-  const btn = document.getElementById('editModeToggle');
-  if (bar) bar.classList.remove('visible');
-  if (btn) { btn.textContent='✏️ Manage'; btn.style.cssText=''; }
-}
+JAVOB FORMATI - FAQAT JSON, BOSHQA HECH NARSA:
+{{
+  "action": "sell" | "add_good" | "add_stock" | "add_debt" | "stats_today" | "stock_report" | "find_product" | "unknown",
+  "confidence": "high" | "low",
+  "params": {{}}
+}}
 
-// ══════════════════════════════════════════════
-//  DELETE TX
-// ══════════════════════════════════════════════
-function openDeleteTx(id) {
-  deleteTxTarget = id;
-  const s = sales.find(x => x.id === id);
-  if (!s) return;
-  const d = new Date(s.ts);
-  document.getElementById('deleteTxSub').textContent =
-    `Remove sale of ${s.qty%1===0?s.qty:s.qty.toFixed(2)} × ${s.code.toUpperCase()} on ${d.toLocaleDateString()}? Revenue: ${fmt(s.revenue)}, Profit: ${fmt(s.profit)}.`;
-  document.getElementById('deleteTxModal').classList.add('open');
-}
-async function confirmDeleteTx() {
-  if (!deleteTxTarget) return;
-  const id = deleteTxTarget;
-  closeModal('deleteTxModal');
-  try {
-    await dbDeleteSale(id);
-    sales = sales.filter(s => s.id !== id);
-    showToast('🗑 Transaction deleted','warn');
-    renderAnalytics();
-  } catch(e) { showToast('❌ Delete failed','error'); }
-}
+PARAMS har action uchun:
+sell:        {{"code":"101","qty":3,"price":null,"note":""}}
+add_good:    {{"code":"319","name":"Cf haval h6","type":"solid","qty":5,"cost_price":40000,"sell_price":65000}}
+add_stock:   {{"code":"101","qty":20}}
+add_debt:    {{"customer":"Anvar","amount":150000,"note":""}}
+stats_today: {{}}
+stock_report:{{}}
+find_product:{{"query":"cobalt moy filter"}}
+unknown:     {{"message":"nima demoqchi ekanligingni tushunmadim"}}
 
-// ══════════════════════════════════════════════
-//  CLEAR ALL IN PERIOD
-// ══════════════════════════════════════════════
-function openClearAllModal() {
-  const labels = {day:'today',week:'this week',month:'this month',year:'this year',all:'all time'};
-  const count  = sales.filter(s => s.ts >= periodStart(activePeriod)).length;
-  document.getElementById('clearAllSub').textContent =
-    `Delete all ${count} transaction${count!==1?'s':''} from ${labels[activePeriod]}? This cannot be undone.`;
-  document.getElementById('clearAllModal').classList.add('open');
-}
-async function confirmClearAll() {
-  const start = periodStart(activePeriod);
-  closeModal('clearAllModal');
-  try {
-    await dbDeleteSalesByPeriod(start);
-    sales = sales.filter(s => s.ts < start);
-    exitEditMode();
-    showToast('🗑 Transactions cleared','warn');
-    renderAnalytics();
-  } catch(e) { showToast('❌ Failed','error'); }
-}
+QOIDALAR:
+1. "minus" "ketdi" "sotildi" "chiqdi" "berdi" -> sell
+2. "plus" "keldi" "qosh" "qoshish" "kirim" -> add_stock
+3. "qarz" "qarzga" "oldi" -> add_debt
+4. "bugun" "hisobot" "pul necha" -> stats_today
+5. "ombor" "qancha bor" -> stock_report
+6. Narx aytilmasa -> price: null
+7. FAQAT JSON qaytаr. Hech qanday izoh yoki markdown yozma."""
 
-// ══════════════════════════════════════════════
-//  DELETE GOOD
-// ══════════════════════════════════════════════
-function openDeleteGood(code) {
-  deleteTarget = code;
-  const txCount = sales.filter(s => s.code === code).length;
-  document.getElementById('deleteSub').textContent =
-    `Remove "${code.toUpperCase()}" from inventory? It has ${txCount} transaction record${txCount!==1?'s':''} in analytics — delete those separately if needed.`;
-  document.getElementById('deleteModal').classList.add('open');
-}
-async function confirmDelete() {
-  if (!deleteTarget) return;
-  const code = deleteTarget;
-  closeModal('deleteModal');
-  try {
-    await dbDeleteGood(code);
-    delete goods[code];
-    showToast(`🗑 ${code.toUpperCase()} removed`,'warn');
-    renderInventory();
-  } catch(e) { showToast('❌ Delete failed','error'); }
-}
+    resp = await openai_client.chat.completions.create(
+        model="gpt-4o-mini",        # CHANGE 1: was gpt-4o
+        messages=[
+            {"role": "system", "content": prompt},
+            {"role": "user",   "content": text},
+        ],
+        max_tokens=300,
+        temperature=0,
+    )
+    raw = resp.choices[0].message.content.strip()
+    import re as _re
+    raw = _re.sub(r"^```(?:json)?\s*", "", raw)
+    raw = _re.sub(r"\s*```$", "", raw)
+    return json.loads(raw.strip())
 
-// ══════════════════════════════════════════════
-//  QUICK ADD
-// ══════════════════════════════════════════════
-function openQuickAdd(code) {
-  quickAddTarget = code;
-  document.getElementById('quickAddSub').textContent = `Add stock to ${code.toUpperCase()}`;
-  document.getElementById('quickAddUnit').textContent = goods[code].type==='liquid'?'L':'units';
-  document.getElementById('quickAddQty').value='';
-  document.getElementById('quickAddModal').classList.add('open');
-}
-async function confirmQuickAdd() {
-  const qty = parseFloat(document.getElementById('quickAddQty').value);
-  if (!qty||qty<=0) { showToast('Enter quantity','error'); return; }
-  const code = quickAddTarget;
-  goods[code].qty = parseFloat((goods[code].qty+qty).toFixed(4));
-  closeModal('quickAddModal');
-  try {
-    await dbSaveGood(code);
-    showToast(`✅ +${qty} added to ${code.toUpperCase()}`,'success');
-    renderInventory();
-  } catch(e) {
-    goods[code].qty = parseFloat((goods[code].qty-qty).toFixed(4));
-    showToast('❌ Save failed','error');
-  }
-}
+# ─────────────────────────────────────────
+#  VOICE TRANSCRIPTION
+# ─────────────────────────────────────────
+async def transcribe_voice(file_bytes):
+    with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
+        tmp.write(file_bytes)
+        tmp_path = tmp.name
+    try:
+        with open(tmp_path, "rb") as f:
+            result = await openai_client.audio.transcriptions.create(
+                model="whisper-1",
+                file=("voice.ogg", f, "audio/ogg"),
+                language="ru",
+                prompt=WHISPER_PROMPT,
+            )
+        return result.text.strip()
+    finally:
+        os.unlink(tmp_path)
 
-// ══════════════════════════════════════════════
-//  MODAL HELPERS
-// ══════════════════════════════════════════════
-function closeModal(id) {
-  document.getElementById(id).classList.remove('open');
-  if (id==='deleteTxModal') deleteTxTarget=null;
-  if (id==='deleteModal')   deleteTarget=null;
-}
+# ─────────────────────────────────────────
+#  CONFIRM SCREEN BUILDER
+# ─────────────────────────────────────────
+async def build_confirm(parsed, role, transcript=None):
+    action = parsed.get("action", "unknown")
+    params = parsed.get("params") or {}
+    lines  = []
 
-// ══════════════════════════════════════════════
-//  UTILS
-// ══════════════════════════════════════════════
-let toastTimer;
-function showToast(msg, type='') {
-  const t = document.getElementById('toast');
-  t.textContent=msg; t.className='toast show '+type;
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(()=>t.className='toast', 2800);
-}
-function fmt(n) {
-  if (n==null||isNaN(n)) return '—';
-  return '$'+Math.abs(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
-}
-function fmtQty(n, type) {
-  return type==='liquid'?(n%1===0?n:n.toFixed(1)):(n%1===0?n:n.toFixed(2));
-}
-function esc(s) {
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
-</script>
-</body>
-</html>
+    if transcript:
+        lines.append(f"Eshitildi: {transcript}\n")
+
+    if action == "sell":
+        code  = str(params.get("code") or "").upper()
+        qty   = params.get("qty", 0)
+        price = params.get("price")
+        good  = db_get_good(code.lower())
+        lines.append("TASDIQLASH KUTILMOQDA:")
+        lines.append(f"Amal: SOTISH")
+        lines.append(f"Tovar: {code}" + (f" - {good['name']}" if good else " (topilmadi!)"))
+        lines.append(f"Miqdor: {qty} {unit_label(good['type']) if good else 'dona'}")
+        lines.append(f"Narx: {fmt_price(price) if price else 'standart'}")
+        if good:
+            lines.append(f"Omborda hozir: {good['qty']} {unit_label(good['type'])}")
+        if not good:
+            lines.append("DIQQAT: Bu kod omborda yoq!")
+
+    elif action == "add_good":
+        code = str(params.get("code") or "").upper()
+        lines.append("TASDIQLASH KUTILMOQDA:")
+        lines.append("Amal: YANGI TOVAR")
+        lines.append(f"Kod: {code}")
+        lines.append(f"Nomi: {params.get('name') or '—'}")
+        lines.append(f"Turi: {'Suyuq' if params.get('type') == 'liquid' else 'Qattiq'}")
+        lines.append(f"Miqdor: {params.get('qty', 0)}")
+        lines.append(f"Tannarx: {fmt_price(params.get('cost_price'))}")
+        lines.append(f"Sotuv narxi: {fmt_price(params.get('sell_price'))}")
+
+    elif action == "add_stock":
+        code = str(params.get("code") or "").upper()
+        qty  = params.get("qty", 0)
+        good = db_get_good(code.lower())
+        lines.append("TASDIQLASH KUTILMOQDA:")
+        lines.append("Amal: STOK QOSHISH")
+        lines.append(f"Tovar: {code}" + (f" - {good['name']}" if good else " (topilmadi!)"))
+        lines.append(f"Qoshiladi: +{qty} {unit_label(good['type']) if good else 'dona'}")
+        if good:
+            lines.append(f"Hozir: {good['qty']} -> boladi: {round(good['qty']+float(qty),2)}")
+
+    elif action == "add_debt":
+        lines.append("TASDIQLASH KUTILMOQDA:")
+        lines.append("Amal: QARZ KIRITISH")
+        lines.append(f"Mijoz: {params.get('customer', '—')}")
+        lines.append(f"Miqdor: {fmt_price(params.get('amount'))}")
+
+    elif action == "stats_today":
+        lines.append("Bugungi hisobotni korsatishim kerakmi?")
+
+    elif action == "stock_report":
+        lines.append("Ombor holatini korsatishim kerakmi?")
+
+    else:
+        msg = params.get("message", "Buyruqni tushunmadim.")
+        lines.append(f"Tushunmadim: {msg}")
+        lines.append("\nMisol buyruqlar:")
+        lines.append("* 101 minus 3")
+        lines.append("* 204 ga 20 ta qosh")
+        lines.append("* bugungi hisobot")
+        lines.append("* ombor holati")
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("Bekor", callback_data="cancel")]])
+        return "\n".join(lines), kb
+
+    if parsed.get("confidence") == "low":
+        lines.append("\nAniq tushunmadim - iltimos tekshiring")
+
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("Tasdiqlash", callback_data="confirm"),
+            InlineKeyboardButton("Bekor",      callback_data="cancel"),
+        ],
+        [InlineKeyboardButton("Qayta yozing",  callback_data="retry")],
+    ])
+    return "\n".join(lines), kb
+
+# ─────────────────────────────────────────
+#  EXECUTE CONFIRMED ACTION
+# ─────────────────────────────────────────
+async def execute_action(parsed, role):
+    action = parsed.get("action", "unknown")
+    params = parsed.get("params") or {}
+
+    try:
+        if action == "sell":
+            code  = str(params.get("code") or "").lower()
+            qty   = float(params.get("qty") or 0)
+            price = params.get("price")
+            note  = str(params.get("note") or "")
+            if not code or qty <= 0:
+                return "Kod yoki miqdor notogri."
+            price_f = float(price) if price is not None else None
+            r = db_sell(code, qty, price_f, role, note)
+            unit = unit_label(r["type"])
+            msg  = (
+                f"Sotildi!\n"
+                f"Tovar: {r['code'].upper()} - {r['name'] or '—'}\n"
+                f"Miqdor: -{qty} {unit}\n"
+                f"Tushum: {fmt_price(r['revenue'])}\n"
+                f"Omborda qoldi: {r['new_qty']} {unit}"
+            )
+            if role == "manager":
+                msg += f"\nFoyda: {fmt_price(r['profit'])}"
+            return msg
+
+        elif action == "add_good":
+            code  = str(params.get("code") or "").lower()
+            name  = str(params.get("name") or "")
+            gtype = str(params.get("type") or "solid")
+            qty   = float(params.get("qty") or 0)
+            cost  = params.get("cost_price")
+            sell  = params.get("sell_price")
+            r = db_add_good(code, name, gtype, qty, cost, sell)
+            return (
+                f"Yangi tovar qoshildi!\n"
+                f"Kod: {code.upper()}\n"
+                f"Nomi: {name or '—'}\n"
+                f"Miqdor: {qty} {unit_label(gtype)}\n"
+                f"Sotuv narxi: {fmt_price(sell)}"
+            )
+
+        elif action == "add_stock":
+            code = str(params.get("code") or "").lower()
+            qty  = float(params.get("qty") or 0)
+            r = db_add_stock(code, qty)
+            unit = unit_label(r["type"])
+            return (
+                f"Stok yangilandi!\n"
+                f"Tovar: {r['code'].upper()} - {r['name'] or '—'}\n"
+                f"+{r['added']} {unit} qoshildi\n"
+                f"Endi omborda: {r['new_qty']} {unit}"
+            )
+
+        elif action == "add_debt":
+            customer = str(params.get("customer") or "").strip()
+            amount   = float(params.get("amount") or 0)
+            note     = str(params.get("note") or "")
+            r = db_add_debt(customer, amount, note)
+            return (
+                f"Qarz kiritildi!\n"
+                f"Mijoz: {customer}\n"
+                f"Miqdor: {fmt_price(amount)}"
+            )
+
+        elif action == "stats_today":
+            s = db_today_stats()
+            msg = (
+                f"Bugungi hisobot\n"
+                f"Jami tushum: {fmt_price(s['revenue'])}\n"
+                f"Foyda: {fmt_price(s['profit'])}\n"
+                f"Tranzaksiyalar: {s['tx_count']} ta"
+            )
+            if s["top_product"]:
+                msg += f"\nTop tovar: {s['top_product']} - {fmt_price(s['top_revenue'])}"
+            return msg
+
+        elif action == "stock_report":
+            # CHANGE 3: use cached version for stock report too
+            goods = db_all_goods_cached()
+            if not goods:
+                return "Ombor bosh."
+            lines = [f"Ombor holati - {len(goods)} ta tovar\n"]
+            for g in goods[:25]:
+                qty  = float(g.get("qty") or 0)
+                unit = unit_label(g.get("type") or "solid")
+                warn = " (!)" if qty <= 2 else ""
+                lines.append(f"{g['id']} {g.get('name') or ''} - {qty} {unit}{warn}")
+            if len(goods) > 25:
+                lines.append(f"...va yana {len(goods)-25} ta")
+            low = [g for g in goods if float(g.get("qty") or 0) <= 2]
+            if low:
+                lines.append("\nKam qolganlar: " + ", ".join(str(g["id"]) for g in low))
+            return "\n".join(lines)
+
+        elif action == "find_product":
+            query = str(params.get("query") or "").lower()
+            found = db_fuzzy_search(query)
+            if not found:
+                return f"{query} boyicha hech narsa topilmadi."
+            lines = [f"Natijalar ({len(found)} ta):\n"]
+            for g in found:
+                unit = unit_label(g.get("type") or "solid")
+                lines.append(
+                    f"{g['id']} - {g.get('name') or '—'} | "
+                    f"{float(g.get('qty') or 0):.1f} {unit} | "
+                    f"{fmt_price(g.get('sell_price'))}"
+                )
+            return "\n".join(lines)
+
+        else:
+            return "Noma'lum buyruq."
+
+    except ValueError as e:
+        msg = str(e)
+        parts = msg.split("|")
+        prefix = parts[0]
+        if prefix == "NOT_FOUND":
+            code = parts[1].upper() if len(parts) > 1 else "?"
+            suggestions = db_fuzzy_search(code.lower())
+            reply = f"{code} omborda yoq!\n"
+            if suggestions:
+                reply += "\nO'xshashlar:\n"
+                for s in suggestions:
+                    unit = unit_label(s.get("type") or "solid")
+                    reply += f"* {s['id']} - {s.get('name') or '—'} ({float(s.get('qty') or 0):.1f} {unit})\n"
+            return reply
+        elif prefix == "OUT_OF_STOCK":
+            code = parts[1].upper() if len(parts) > 1 else "?"
+            gtype = parts[2] if len(parts) > 2 else "solid"
+            return f"{code} tugagan! Omborda: 0 {unit_label(gtype)}"
+        elif prefix == "INSUFFICIENT":
+            code  = parts[1].upper() if len(parts) > 1 else "?"
+            qty   = parts[2] if len(parts) > 2 else "?"
+            gtype = parts[3] if len(parts) > 3 else "solid"
+            return f"Yetarli stok yoq: {code}\nOmborda: {qty} {unit_label(gtype)}"
+        else:
+            return f"Xato: {e}"
+    except Exception as e:
+        log.error(f"execute_action error: {e}", exc_info=True)
+        return f"Xatolik yuz berdi: {e}"
+
+# ─────────────────────────────────────────
+#  PROCESS COMMAND (shared by text+voice)
+# ─────────────────────────────────────────
+async def process_command(update, role, text, transcript=None):
+    user_id  = update.effective_user.id
+    thinking = await update.message.reply_text("Tahlil qilinmoqda...")
+    try:
+        # CHANGE 2: parse_command no longer takes product_list
+        parsed = await parse_command(text)
+        action = parsed.get("action", "unknown")
+        log.info(f"uid={user_id} role={role} action={action} parsed={parsed}")
+
+        if role == "seller" and action not in SELLER_ALLOWED:
+            await thinking.edit_text(
+                "Bu amal siz uchun ruxsat etilmagan.\n\n"
+                "Siz faqat:\n* Tovar sotishingiz\n* Tovar qidirishingiz mumkin."
+            )
+            return
+
+        confirm_text, keyboard = await build_confirm(parsed, role, transcript)
+        await thinking.edit_text(confirm_text, reply_markup=keyboard)
+        pending[user_id] = {"parsed": parsed, "transcript": transcript or ""}
+
+    except json.JSONDecodeError:
+        await thinking.edit_text("Buyruqni tahlil qilib bolmadi. Qayta urining.")
+    except Exception as e:
+        log.error(f"process_command error: {e}", exc_info=True)
+        await thinking.edit_text(f"Xatolik: {e}")
+
+# ─────────────────────────────────────────
+#  TELEGRAM HANDLERS
+# ─────────────────────────────────────────
+async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    role    = get_role(user_id)
+    if not role:
+        return
+    emoji   = "Manager" if role == "manager" else "Seller"
+    features = (
+        "* Tovar sotish\n* Stok qoshish\n* Yangi tovar\n* Qarz\n* Hisobotlar"
+        if role == "manager" else
+        "* Tovar sotish\n* Tovar qidirish"
+    )
+    await update.message.reply_text(
+        f"{emoji} sifatida kirdiniz.\n\n"
+        f"Ruxsat etilgan amallar:\n{features}\n\n"
+        f"Matnli yoki ovozli buyruq yuboring.\n/help"
+    )
+
+async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    role    = get_role(user_id)
+    if not role:
+        return
+    is_mgr = role == "manager"
+    text = "Buyruqlar:\n\n"
+    text += "Sotish:\n101 minus 3\n103 5 ta 15000 dan\n\n"
+    text += "Qidirish:\ncobalt moy filter bor mi\n\n"
+    if is_mgr:
+        text += "Stok qoshish:\n101 ga 20 ta qosh\n\n"
+        text += "Yangi tovar:\nyangi tovar: mf honda, kodi 136, 5 dona, tannarx 40000, sotish 60000\n\n"
+        text += "Qarz:\nRustam 150000 qarz oldi\n\n"
+        text += "Hisobotlar:\nbugungi hisobot\nombor holati\n\n"
+    text += "Ovozli xabar ham ishlaydi!"
+    await update.message.reply_text(text)
+
+async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    role    = get_role(user_id)
+    if not role:
+        return
+    await process_command(update, role, update.message.text.strip())
+
+async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    role    = get_role(user_id)
+    if not role:
+        return
+    status = await update.message.reply_text("Ovoz eshitilmoqda...")
+    try:
+        voice   = update.message.voice or update.message.audio
+        tg_file = await ctx.bot.get_file(voice.file_id)
+        raw     = await tg_file.download_as_bytearray()
+        transcript = await transcribe_voice(bytes(raw))
+        log.info(f"Transcript: {transcript}")
+        await status.edit_text(f"Eshitildi: {transcript}\n\nTahlil qilinmoqda...")
+        await status.delete()
+        await process_command(update, role, transcript, transcript)
+    except Exception as e:
+        log.error(f"handle_voice error: {e}", exc_info=True)
+        try:
+            await status.edit_text(f"Ovozni eshita olmadim. Qayta urining.\n{e}")
+        except Exception:
+            pass
+
+async def handle_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query   = update.callback_query
+    user_id = query.from_user.id
+    role    = get_role(user_id)
+    if not role:
+        await query.answer("Ruxsat yoq.")
+        return
+    await query.answer()
+    data = query.data
+
+    if data == "cancel":
+        pending.pop(user_id, None)
+        await query.edit_message_text("Bekor qilindi. Hech narsa ozgarmadi.")
+
+    elif data == "retry":
+        pending.pop(user_id, None)
+        await query.edit_message_text("Qayta yozing yoki ovoz yuboring.")
+
+    elif data == "confirm":
+        p = pending.pop(user_id, None)
+        if not p:
+            await query.edit_message_text(
+                "⚠️ Buyruq muddati tugadi (bot qayta ishga tushgan bolishi mumkin).\n"
+                "Iltimos, buyruqni qayta yuboring."
+            )
+            return
+        parsed = p["parsed"]
+        if role == "seller" and parsed.get("action") not in SELLER_ALLOWED:
+            await query.edit_message_text("Bu amal siz uchun ruxsat etilmagan.")
+            return
+        await query.edit_message_text("Bajarilmoqda...")
+        result = await execute_action(parsed, role)
+        await query.edit_message_text(result)
+
+# ─────────────────────────────────────────
+#  MAIN
+# ─────────────────────────────────────────
+def main():
+    app = Application.builder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("help",  cmd_help))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO,   handle_voice))
+    app.add_handler(CallbackQueryHandler(handle_callback))
+    log.info("Tovar Bot ishga tushdi!")
+    app.run_polling(drop_pending_updates=True)
+
+if __name__ == "__main__":
+    main()
